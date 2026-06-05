@@ -1,0 +1,30 @@
+# Environment
+.env
+venv/
+__pycache__/
+*.pyc
+.idea/
+
+# Large unused model file (not loaded by app)
+models/shap_explainer.pkl
+
+# Multiple recommendation versions — only v5_1 is used by app
+recommendations_output_v5_2.csv
+recommendations_output_v5_3.csv
+recommendations_output_v5_4.csv
+
+# Not loaded by app
+recommendation_targets.csv
+liability_data.csv
+transaction_behavior.csv
+
+# Training / generation script (not needed for app)
+data_generation_week2_progress.py
+loan_prediction.csv
+
+# CatBoost training artefacts
+catboost_info/
+
+# Misc
+*.png
+decision_tree_rules.txt
