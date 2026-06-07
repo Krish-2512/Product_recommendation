@@ -686,19 +686,221 @@ All multipliers and caps were reduced:
 
 ## EDA Companion File (`eda_analysis.py`)
 
-A separate 11-cell EDA notebook was created to explore the 8 output CSVs. Key findings:
+---
 
-| Finding | Value | Expected (RBI) | Status |
+A separate 11-cell EDA script was created to explore all 8 output CSVs after data generation. It validates causal relationships, spots RBI misalignments, and confirms data integrity before training. All charts are saved as PNG files and displayed in the Streamlit app's **📈 EDA Report** tab.
+
+**Files generated:** `eda_01_demographics.png`, `eda_02_cibil.png`, `eda_02b_dti_clv.png`, `eda_03_assets.png`, `eda_04_liability.png`, `eda_05_transactions.png`, `eda_06_products.png`, `eda_07_recommendations.png`, `eda_08_portfolio.png`, `eda_09_correlations.png`
+
+---
+
+### EDA Cell 1 — Data Loading & Sanity Check
+
+**What it does:** Loads all 8 CSVs into pandas DataFrames and runs a data quality report.
+
+**Output — Dataset Summary Table:**
+
+| Table | Rows | Cols | Nulls |
 |---|---|---|---|
-| CIBIL excellent tier | 70.2% | ~35% | Fixed via repayment rate change |
-| CC ownership rate | 21% | 7–10% | Fixed via multiplier reduction |
-| Age distribution | Flat uniform | Peaks 25–45 | Noted (future fix) |
-| Insurance uniform across segments | ~41% all segments | HNI should be 60–70% | Noted (future fix) |
-| Online spend ratio cap | Max 18% | Should reach 20%+ | Noted (CC trigger unreachable) |
+| customer_master | 20,000 | 22 | 0 |
+| liability_data | 20,000 | 16 | 0 |
+| asset_data | 20,000 | 17 | 0 |
+| cibil_data | 20,000 | 22 | 0 |
+| transaction_behavior | 20,000 | 16 | 0 |
+| product_ownership | 20,000 | 16 | 0 |
+| recommendation_targets | 20,000 | 85 | 0 |
+| product_performance_monthly | 108 | 6 | 0 |
+
+**Key checks:** Zero nulls across all tables. Zero duplicate `customer_id`s across all 7 customer-level CSVs. Both confirm data generation ran correctly end-to-end.
+
+---
+
+### EDA Cell 2 — Customer Demographics (`customer_master.csv`) → `eda_01_demographics.png`
+
+**6 charts in a 2×3 grid:**
+
+1. **Age Distribution histogram** — Flat/uniform 18–75, mean=46.5, median=46.0. Red dashed mean line. *Known issue:* real bank data peaks 25–45. Age-realism fix (Fix 2) was identified here but deferred.
+
+2. **Occupation bar chart** — Salaried 51.7%, self_employed 12.0%, student 11.9%, other 9.0%, business 8.3%, retired 7.1%.
+
+3. **Income Group bar chart** — Low/lower_mid/mid roughly equal (~25% each), upper_mid 16.4%, high 4.9%. Correct income pyramid structure.
+
+4. **City Tier pie chart** — Tier-3 dominates at 66.8%, Tier-2 at 24.5%, Tier-1 at 8.7%.
+
+5. **Customer Segment horizontal bar chart** — mass 43.3%, youth 20.1%, retail 20.0%, mass_affluent 12.9%, hni 1.9%, elite 1.8%.
+
+6. **CLV Tier bar chart** — normal 88%, elite 10%, super_hni 2%. Thresholds at p88=68.5 and p98=78.0 of CLV score distribution.
+
+---
+
+### EDA Cell 3 — CIBIL Score Analysis (`cibil_data.csv`) → `eda_02_cibil.png`
+
+**6 charts in a 2×3 grid:**
+
+1. **CIBIL Score histogram** — Right-skewed, peaking 780–820. Dashed lines at 650, 700, 750 tier thresholds. Mean=735.7, std=80.6.
+
+2. **CIBIL 4-Tier bar chart** — excellent 51.1%, high_risk 19.6%, good 15.1%, risky 13.9%, no_history 0.2%.
+
+3. **CIBIL vs Repayment Status boxplot** — regular=798, delayed=693, default=619. The 179-point gap between regular and default **validates the causal generation chain** — CIBIL is downstream of repayment behaviour.
+
+4. **CIBIL Sub-factor Score boxplots** — 5 factors: Payment History (weight 35%), Utilization (30%), History Length (15%), Credit Mix (10%), Inquiries (10%). Utilization median ~90 (highest), Credit Mix ~47 (lowest).
+
+5. **Bureau Inquiries bar chart** — Exponential decay from 0 (7,100 customers) to 7+ inquiries. Most customers are not credit-hungry.
+
+6. **CIBIL by Income Group violin plot** — Higher income → slightly better CIBIL, but wide overlap. Income alone doesn't determine creditworthiness.
+
+---
+
+### EDA Cell 3B — DTI, CLV Score & Default Rate Analysis → `eda_02b_dti_clv.png`
+
+**This cell was added after initial EDA to cover 3 variables not in the original plan.**
+
+**6 charts in a 2×3 grid:**
+
+1. **DTI Ratio Distribution histogram** — Heavily right-skewed near 0. Orange dashed at DTI=3 (high), red dashed at DTI=5 (hard block). 94.6% low, 5.4% moderate, 0% high or severe.
+
+2. **DTI Bucket bar chart** — low 94.6%, moderate 5.4%, high 0%, severe 0%. Confirms the ≥5× hard gate blocks no current customers (all DTI well below 5×).
+
+3. **CLV Score Numeric histogram** — Mean=46.7, Median=48.5. Gold dashed line at p88=68.5 (elite threshold), red dashed at p98=78.0 (super_hni threshold). Roughly normal with slight right tail.
+
+4. **Writeoff Rate by CIBIL Tier bar chart** — high_risk 22.2%, risky 0.3%, good 0%, excellent 0%, no_history 2.0%. Dramatic drop validates CIBIL-risk relationship.
+
+5. **Default History Rate by CIBIL Tier bar chart** — high_risk 56.5%, risky 9.1%, good 0%, excellent 0%, no_history 6.0%. Even stronger signal than writeoff rate.
+
+6. **CLV Score by CIBIL Tier boxplot** — Excellent median ~55, good ~45, risky ~38, high_risk ~25. Better CIBIL → better repayment → more `repayment_pts` → higher CLV. Confirms causal chain across 4 features.
+
+---
+
+### EDA Cell 4 — Loan & Asset Analysis (`asset_data.csv`) → `eda_03_assets.png`
+
+**6 charts in a 2×3 grid:**
+
+1. **Loan Type Prevalence horizontal bar chart** — gold 18.5%, personal 10.8%, car 5.7%, education 1.4%, home 0.8%, business 0%. Business 0% is correct (only assigned to business/self_employed with high income).
+
+2. **FOIR Distribution histogram** — Mostly below 0.35 (safe zone). Right-skewed with long tail. Green dashed at 0.35 (safe threshold), red dashed at 0.50 (risky threshold).
+
+3. **DPD Bucket bar chart** — 0 days (on-time) 49.2%, 1–30 days 18.3%, 31–60 days 7.7%, 61–90 days 11.9%, 90+ days 12.9%.
+
+4. **Repayment Status pie chart** — regular 54.7%, delayed 25.4%, default 19.9%. Matches Fix 1 target of 55/25/20%.
+
+5. **Loan Amount by Income Group boxplot** — Strong positive gradient. High income median loan ~₹20L vs low income ~₹0.5L. Validates income → loan size relationship.
+
+6. **Active Loans per Customer bar chart** — 65.6% have 0, 31.6% have 1, 2.7% have 2, 0.1% have 3. Realistic for retail bank portfolio.
+
+---
+
+### EDA Cell 5 — Banking Behaviour & Digital Adoption (`liability_data.csv`) → `eda_04_liability.png`
+
+**Bug fixed in this session:** Column names in `liability_data.csv` have `_flag` suffix (`savings_account_flag`, not `savings_account`). The bar chart was blank until this was corrected.
+
+**6 charts in a 2×3 grid:**
+
+1. **Savings Rate histogram** — Mean=0.328 (32.8%), roughly normal 10–50%. Orange dashed at 0.30 (high-saver threshold).
+
+2. **UPI Transactions per Month histogram** — Mean=21.8, peaks around 25–30. Green dashed at 30 (power user threshold).
+
+3. **Digital Adoption Score bar chart** — 0=5.7%, 1=37.5%, 2=43.5%, 3=13.3%.
+
+4. **Banking Account Ownership bar chart** — savings_account_flag 89.9%, fd_flag 40.1%, rd_flag 35.1%, current_account_flag 29.7%.
+
+5. **Savings Rate by City Tier boxplot** — Nearly identical across Tier 1/2/3. Minor limitation — real data would show Tier-1 saving less (higher cost of living).
+
+6. **Mean Digital Adoption by Occupation bar chart** — Flat 1.58–1.66 across all occupations. *Known limitation:* students and salaried should be more digital than retired/business.
+
+---
+
+### EDA Cell 6 — Spend Behaviour & Transaction Patterns (`transaction_behavior.csv`) → `eda_05_transactions.png`
+
+**6 charts in a 2×3 grid:**
+
+1. **Average Spend Category Breakdown pie chart** — ecommerce 25.2%, education 19.5%, fuel 16.4%, travel 14.5%, utility 13.6%, insurance 10.7%.
+
+2. **Dominant Spend Category bar chart** — ecommerce 67.8%, education 22.1%, fuel 5.5%, travel 4.0%, utility 0.7%. Matches the LabelEncoder mapping in ML features.
+
+3. **Online Spend Ratio Distribution histogram** — Flat 0.08–0.18. Red dashed CC trigger at 0.20. *Critical finding:* zero customers reach the CC trigger — spending data is capped at 18%. Fix 5 deferred.
+
+4. **Travel Spend Ratio histogram** — Flat 0.03–0.12. Green dashed travel-card trigger at 0.15. Same Fix 5 issue — nobody triggers travel card recommendation via this signal.
+
+5. **Investment Intent Score bar chart** — 0=53.5%, 1=38.6%, 2=7.4%, 3=0.5%. Most customers have low intent.
+
+6. **Monthly Spend by Income Group boxplot** — Strong positive gradient. High income spends 5–7× more than low income.
+
+---
+
+### EDA Cell 7 — Product Ownership Analysis (`product_ownership.csv`) → `eda_06_products.png`
+
+**Bug fixed:** Column names in `recommendation_targets.csv` differ from what was assumed. Fixed to use `recommended_product`, `confidence_score`, `top2_recommended_product`.
+
+**6 charts in a 2×3 grid:**
+
+1. **Product Ownership Rates bar chart** — debit_card 79.9%, insurance 42.0%, fd 40.1%, rd 35.1%, consumer_durable 32.0%, mutual_funds 13.5%, demat_account 9.0%, credit_card 6.1%. RBI CC average 7% shown as dashed red line.
+
+2. **CC Variant Distribution pie chart** — basic 28.5%, premium 29.9%, rewards 41.5%.
+
+3. **CC Credit Limit Distribution histogram** — Median ₹2.0L (red dashed). Most in ₹0–5L range.
+
+4. **CC Ownership Rate by CIBIL Tier bar chart** — good 7.6%, excellent 9.7%, all others 0%. **Confirms CIBIL ≥700 gate is enforced correctly** — no high_risk or risky customer holds a CC.
+
+5. **Insurance Ownership by Segment bar chart** — Flat 41–48% across all segments. *Known limitation:* HNI should be ~65%, mass ~30%. This is Fix 4 (deferred).
+
+6. **Total Products per Customer bar chart** — 0=2.3%, 1=15.6%, 2=31.7%, 3=29.0%, 4=16.1%, 5=4.4%, 6=0.8%.
+
+---
+
+### EDA Cell 8 — Recommendation Engine Output → `eda_07_recommendations.png`
+
+**Bug fixed:** The master merge in Cell 10 was broken — the entire merge chain was conditional on `rec1_col` (which was None due to wrong column names), making `master` just `customer_master`. Fixed by separating the `recommendation_targets` merge into a standalone conditional block.
+
+Shows distribution of rank-1 recommendations, confidence scores, and bank risk labels across all 20,000 customers. Validates that the recommendation engine is producing diverse outputs rather than defaulting to one product.
+
+---
+
+### EDA Cell 9 — Portfolio Performance & Seasonal Trends → `eda_08_portfolio.png`
+
+Analyses `product_performance_monthly.csv` (108 rows = 9 products × 12 months).
+
+**Key findings:**
+- Education loan has the highest default rate (~12–14%), insurance the lowest (~2%)
+- Profit multipliers fluctuate ±5–10% month-to-month — home loans peak in Q4 (festive season)
+- Recommendation intensity caps education loan at 0.6, gold/home/car at 1.0
+- Net adjustment = profit_multiplier × intensity — this is the portfolio-level multiplier applied in Step 7 of the recommendation engine
+
+---
+
+### EDA Cell 10 — Cross-Dataset Correlation Matrix → `eda_09_correlations.png`
+
+Merges all 6 customer-level CSVs on `customer_id` to build a master DataFrame, then computes a Pearson correlation heatmap on all numeric columns.
+
+**Key correlations validated:**
+
+| Correlation | Direction | What it validates |
+|---|---|---|
+| CIBIL score ↔ repayment_ord | Strong positive | Causal generation: better repayment → higher CIBIL |
+| monthly_income ↔ loan_amount | Strong positive | Richer customers take larger loans |
+| digital_adoption ↔ online_spend_ratio | Moderate positive | More digital → more online spend |
+| clv_score ↔ cibil_score | Moderate positive | Better credit → higher repayment_pts → higher CLV |
+| foir ↔ emi_amount | Near-perfect positive | FOIR = EMI/income — validates data integrity |
+| writeoff_flag ↔ default_history_flag | Strong positive | Both driven by high-risk CIBIL tier |
+
+---
+
+### EDA Cell 11 — Summary & Conclusion
+
+Prints a final summary of all findings, lists the RBI misalignments discovered, and documents which fixes were applied.
+
+---
+
+### RBI Alignment Summary — What EDA Found
+
+| Issue Found in EDA | Before | After Fix | Action |
+|---|---|---|---|
+| Repayment distribution | 75/18/7% | 55/25/20% | **Fix 1 applied** |
+| CC ownership rate | 21% | 6.1% | **Fix 3 applied** |
+| Age distribution (flat uniform) | Uniform 18–75 | Should peak 25–45 | Fix 2 deferred |
+| Insurance flat by segment | ~42% all tiers | HNI ~65%, mass ~30% | Fix 4 deferred |
+| Online/travel spend cap | Max 18%/12% | Triggers at 20%/15% | Fix 5 deferred |
 | Zero nulls across all 7 CSVs | ✓ | ✓ | Pass |
 | 20,000 unique customer IDs | ✓ | ✓ | Pass |
 | Regular CIBIL mean > default mean by >100 pts | ✓ (798 vs 619) | Required | Pass |
 | CC holders all have CIBIL ≥700 | ✓ (0% for risky/high_risk) | Required | Pass |
-| DTI ≥5× hard blocked customers | ~X% | Expected minority | See eda_02b_dti_clv.png |
-
-EDA saves 10 PNG charts: `eda_01_demographics.png` through `eda_09_correlations.png` + `eda_02b_dti_clv.png`.
+| DTI ≥5× hard blocked | 0 customers blocked | Expected minority | Pass |

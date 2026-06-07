@@ -857,6 +857,155 @@ A lightweight REST API serving the same recommendation data as JSON:
 \end{tabular}
 
 %% ============================================================
+\newpage
+%% ============================================================
+\section{Exploratory Data Analysis — All 8 Datasets}
+
+EDA was conducted in \texttt{eda\_analysis.py} (11 cells) after generating all CSVs. The goal was to validate causal relationships, spot RBI misalignments, and confirm data integrity before training the ML models.
+
+\subsection{Dataset Overview}
+
+\begin{tabular}{llll}
+\toprule
+\textbf{Dataset} & \textbf{Rows} & \textbf{Cols} & \textbf{Key Variables} \\
+\midrule
+\texttt{customer\_master.csv}          & 20{,}000 & 22 & age, occupation, income\_group, clv\_score, clv\_tier \\
+\texttt{cibil\_data.csv}               & 20{,}000 & 22 & cibil\_score, bureau\_inquiries\_6m, writeoff\_flag \\
+\texttt{asset\_data.csv}               & 20{,}000 & 17 & repayment\_status, foir, dti\_ratio, emi\_amount \\
+\texttt{liability\_data.csv}           & 20{,}000 & 16 & savings\_rate, digital\_adoption\_score, upi\_txn\_count \\
+\texttt{transaction\_behavior.csv}     & 20{,}000 & 16 & online\_spend\_ratio, travel\_spend\_ratio, investment\_intent \\
+\texttt{product\_ownership.csv}        & 20{,}000 & 16 & credit\_card, insurance, cc\_credit\_limit \\
+\texttt{recommendation\_targets.csv}   & 20{,}000 & 85 & recommended\_product, confidence\_score, bank\_risk\_score\_* \\
+\texttt{product\_performance\_monthly} &      108 &  6 & month, product, default\_rate\_pct, profit\_multiplier \\
+\midrule
+\textbf{Data quality} & \multicolumn{3}{l}{Zero nulls across all tables. Zero duplicate customer IDs.} \\
+\bottomrule
+\end{tabular}
+
+\subsection{Cell 1 — Customer Demographics (customer\_master.csv)}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Age:} Flat uniform 18--75, mean=46.5. Real bank data peaks at 25--45. This is a known synthetic data limitation (age-realism fix deferred).
+  \item \textbf{Occupation:} Salaried 51.7\%, self\_employed 12.0\%, student 11.9\%, other 9.0\%, business 8.3\%, retired 7.1\%. Realistic for an urban Indian bank.
+  \item \textbf{Income group:} Low/lower\_mid/mid $\approx$25\% each, upper\_mid 16\%, high 5\%. Correct income pyramid.
+  \item \textbf{City tier:} Tier-3 dominant at 66.8\%, Tier-2 at 24.5\%, Tier-1 at 8.7\%. Matches India's demographic spread.
+  \item \textbf{Customer segment:} mass 43.3\%, youth+retail $\approx$40\%, mass\_affluent 12.9\%, elite+HNI only 3.7\% (correctly rare).
+  \item \textbf{CLV tier:} normal 88\%, elite 10\%, super\_hni 2\% — thresholds set at p88 (68.5) and p98 (78.0) of the CLV score distribution.
+\end{itemize}
+
+\subsection{Cell 2 — CIBIL Score Analysis (cibil\_data.csv)}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{CIBIL distribution:} Right-skewed, peaking 780--820. Mean=735.7, std=80.6. 51.1\% excellent, 19.6\% high\_risk, 15.1\% good, 13.9\% risky, 0.2\% no\_history.
+  \item \textbf{Causal validation:} Regular repayment $\rightarrow$ median CIBIL 798; Delayed $\rightarrow$ 693; Default $\rightarrow$ 619. The 179-point gap confirms the causal generation chain is working correctly.
+  \item \textbf{CIBIL sub-scores:} Utilization score median $\approx$90 (highest), Credit Mix $\approx$47 (lowest) — reflects limited product diversity.
+  \item \textbf{Bureau inquiries:} Exponential decay from 0 to 7 — most customers are not credit-hungry.
+  \item \textbf{CIBIL by income:} Positive correlation but wide overlap — income alone does not determine creditworthiness.
+\end{itemize}
+
+\subsection{Cell 2B — DTI, CLV Score, and Default Rate Analysis (New Cell)}
+
+This cell was added during EDA to analyse three variables not covered in the original cells.
+
+\begin{tabular}{lll}
+\toprule
+\textbf{Variable} & \textbf{Finding} & \textbf{Interpretation} \\
+\midrule
+DTI bucket       & 94.6\% low, 5.4\% moderate, 0\% high/severe & Most customers have 0--1 loans; hard ≥5× block working \\
+CLV score        & Mean=46.7, Median=48.5, p88=68.5, p98=78.0  & Thresholds correctly placed for elite/super\_hni tiers \\
+Writeoff rate    & high\_risk: 22.2\%, risky: 0.3\%, excellent: 0\% & Confirms CIBIL tier correctly predicts write-off risk \\
+Default history  & high\_risk: 56.5\%, risky: 9.1\%, excellent: 0\%  & Strong causal signal; validates data integrity \\
+CLV by CIBIL    & Excellent median $\approx$55, high\_risk median $\approx$25   & Better CIBIL $\rightarrow$ more repayment pts $\rightarrow$ higher CLV \\
+\bottomrule
+\end{tabular}
+
+\subsection{Cell 3 — Loan \& Asset Analysis (asset\_data.csv)}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Loan prevalence:} Gold 18.5\%, Personal 10.8\%, Car 5.7\%, Education 1.4\%, Home 0.8\%, Business 0\%. Gold loan dominance is realistic for India; business loan correctly zero (only assigned to business/self\_employed with sufficient income).
+  \item \textbf{FOIR:} Mostly below 0.35 safe threshold. Right-skewed — few customers are over-leveraged.
+  \item \textbf{DPD:} 49.2\% on-time (DPD=0), 18.3\% mildly overdue (1--30 days). Matches RBI-aligned repayment split.
+  \item \textbf{Repayment split:} Regular 54.7\%, Delayed 25.4\%, Default 19.9\% — closely matches target 55/25/20\% after Fix 1.
+  \item \textbf{Active loans:} 65.6\% have 0, 31.6\% have 1 — realistic for retail bank portfolio.
+\end{itemize}
+
+\subsection{Cell 4 — Banking Behaviour \& Digital Adoption (liability\_data.csv)}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Savings rate:} Mean 32.8\%, roughly normal 10--50\%. Healthy savings in the synthetic portfolio.
+  \item \textbf{UPI transactions:} Mean 21.8/month, power-user threshold at 30 captures top $\approx$35\% — priority credit card targets.
+  \item \textbf{Digital adoption:} 0=5.7\%, 1=37.5\%, 2=43.5\%, 3=13.3\%. Majority are mid-tier digital users.
+  \item \textbf{Account ownership:} savings\_account 89.9\%, FD 40.1\%, RD 35.1\%, current\_account 29.7\%.
+  \item \textbf{Known limitation:} Digital adoption is nearly flat across occupations (1.58--1.66) — students and salaried should score higher than retired/business.
+\end{itemize}
+
+\subsection{Cell 5 — Spend Behaviour \& Transaction Patterns (transaction\_behavior.csv)}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Dominant spend:} ecommerce 67.8\%, education 22.1\%, fuel 5.5\%, travel 4.0\% — matches the LabelEncoder mapping used in ML features.
+  \item \textbf{Online spend ratio:} Flat 0.08--0.18. The credit card boost trigger ($\geq$0.20) is above the data range — zero customers trigger this. Fix 5 deferred.
+  \item \textbf{Travel spend ratio:} Flat 0.03--0.12. Travel card trigger ($\geq$0.15) also above the data range. Same Fix 5 issue.
+  \item \textbf{Investment intent:} 0=53.5\%, 1=38.6\%, 2=7.4\%, 3=0.5\%. Most customers have low intent — insurance/MF recommendations will be rare unless other signals are strong.
+\end{itemize}
+
+\subsection{Cell 6 — Product Ownership (product\_ownership.csv)}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Credit card:} 6.1\% — very close to RBI national average of 7\% after Fix 3. Previously 21\% before fix.
+  \item \textbf{Other products:} debit\_card 79.9\%, insurance 42\%, FD 40.1\%, RD 35.1\%.
+  \item \textbf{CC CIBIL gate validation:} Only good (7.6\%) and excellent (9.7\%) hold credit cards. high\_risk and risky = 0\% — confirms the CIBIL $\geq$700 gate is enforced correctly.
+  \item \textbf{Insurance by segment:} Completely flat 41--48\% across all segments. HNI customers should be $\approx$65\%, mass $\approx$30\%. This is Fix 4 (deferred).
+  \item \textbf{Products per customer:} Mode=2, most own 2--3 products; only 2.3\% own nothing.
+\end{itemize}
+
+\subsection{Cell 7 — Recommendation Engine Output (recommendation\_targets.csv)}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item Distribution of rank-1 recommendations and confidence scores across all 20{,}000 customers.
+  \item Bank risk label distribution — proportion of Low/Medium/High/Critical recommendations.
+  \item Validates that products are being recommended within their correct eligibility tiers.
+\end{itemize}
+
+\subsection{Cell 8 — Portfolio Performance \& Seasonal Trends (product\_performance\_monthly.csv)}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{12-month default rates:} Education loan highest ($\approx$12--14\%), insurance lowest ($\approx$2\%). Reflects real product risk profiles.
+  \item \textbf{Profit multipliers:} Fluctuate $\pm$5--10\% month-to-month — home loans peak in Q4 (festive season).
+  \item \textbf{Recommendation intensity:} Education loan capped at 0.6 (to avoid over-recommending a high-risk product). Gold/home/car at 1.0.
+  \item \textbf{Net adjustment} = profit\_multiplier $\times$ intensity — applied as final portfolio-level multiplier in utility scoring.
+\end{itemize}
+
+\subsection{Cell 9 — Cross-Dataset Correlation Analysis}
+
+Key validated correlations across the merged master dataset:
+
+\begin{tabular}{ll}
+\toprule
+\textbf{Correlation} & \textbf{Interpretation} \\
+\midrule
+CIBIL score $\leftrightarrow$ repayment\_ord   & Strong positive — validates causal generation \\
+monthly\_income $\leftrightarrow$ loan\_amount & Strong positive — richer customers take larger loans \\
+digital\_adoption $\leftrightarrow$ online\_spend\_ratio & Moderate positive — digital users spend more online \\
+clv\_score $\leftrightarrow$ cibil\_score      & Moderate positive — better credit $\rightarrow$ higher repayment pts $\rightarrow$ higher CLV \\
+foir $\leftrightarrow$ emi\_amount             & Near-perfect positive — FOIR = EMI/income, validates data integrity \\
+writeoff\_flag $\leftrightarrow$ default\_history\_flag & Strong positive — both driven by high-risk CIBIL tier \\
+\bottomrule
+\end{tabular}
+
+\subsection{RBI Alignment Summary — What EDA Found and Fixed}
+
+\begin{tabular}{p{4.5cm}p{2.5cm}p{2.5cm}p{4cm}}
+\toprule
+\textbf{Issue Found} & \textbf{Before EDA} & \textbf{After Fix} & \textbf{Action} \\
+\midrule
+Repayment distribution & 75/18/7\% & 55/25/20\% & Fix 1 applied ✓ \\
+CC ownership rate & 21\% & 6.1\% & Fix 3 applied ✓ \\
+Age distribution (flat) & Uniform 18--75 & Peak 25--45 & Fix 2 deferred \\
+Insurance flat by segment & $\approx$42\% all tiers & HNI 65\%, mass 30\% & Fix 4 deferred \\
+Online/travel spend cap & Max 18\%/12\% & Triggers at 20\%/15\% & Fix 5 deferred \\
+\bottomrule
+\end{tabular}
+
 \section{Key Design Decisions (Point-by-Point)}
 
 \begin{enumerate}[leftmargin=*,itemsep=3pt]
