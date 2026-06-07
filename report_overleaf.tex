@@ -1,0 +1,884 @@
+%% ============================================================
+%%  ICICI Bank Product Recommendation System — Project Report
+%%  Paste entire file into Overleaf → Recompile (pdflatex)
+%% ============================================================
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{colortbl}
+\usepackage{longtable}
+
+\definecolor{iciciOrange}{RGB}{240,90,36}
+\definecolor{lightgray}{RGB}{245,245,245}
+\definecolor{darkblue}{RGB}{0,51,102}
+\definecolor{okgreen}{RGB}{0,128,0}
+\definecolor{blockred}{RGB}{180,0,0}
+
+\hypersetup{colorlinks=true,linkcolor=darkblue,urlcolor=iciciOrange}
+\pagestyle{fancy}\fancyhf{}
+\rhead{\textcolor{iciciOrange}{\textbf{ICICI Bank}}}
+\lhead{Product Recommendation System}
+\rfoot{Page \thepage}
+
+\titleformat{\section}{\large\bfseries\color{darkblue}}{}{0em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries\color{iciciOrange}}{}{0em}{}
+
+\setlength{\parskip}{5pt}\setlength{\parindent}{0pt}
+
+%% ============================================================
+\begin{document}
+
+%% ---- TITLE PAGE ----
+\begin{titlepage}\centering\vspace*{1.5cm}
+{\color{iciciOrange}\rule{\linewidth}{3pt}}\\[0.4cm]
+{\Huge\bfseries\color{darkblue}ICICI Bank\\[0.3cm]Product Recommendation System}\\[0.4cm]
+{\color{iciciOrange}\rule{\linewidth}{3pt}}\\[0.8cm]
+{\Large Summer Internship Project Report}\\[0.4cm]
+{\large ML Pipeline v5.1 $\cdot$ Data Generator v6.1}\\[1.5cm]
+\begin{tabular}{ll}
+\textbf{Intern}   & Krish Raj \\[4pt]
+\textbf{Date}     & June 2026 \\[4pt]
+\textbf{Stack}    & Python, XGBoost, CatBoost, Streamlit, LangChain (Groq) \\[4pt]
+\textbf{Dataset}  & 20{,}000 synthetic ICICI Bank customers \\[4pt]
+\textbf{Products} & 9 financial products \\[4pt]
+\textbf{Features} & 160 engineered features fed to ML models \\
+\end{tabular}
+\end{titlepage}
+
+\tableofcontents\newpage
+
+%% ============================================================
+\section{Project in One Paragraph}
+
+This project builds an automated product recommendation engine for ICICI Bank. 20{,}000 synthetic customers are generated using RBI statistics, then 160 features are engineered per customer, four ML models are trained (XGBoost + CatBoost ensemble, Decision Tree, AdaBoost, Logistic Regression), and a utility-based ranking decides which of 9 financial products to recommend — balancing customer fit, bank profit, and bank risk. Everything is exposed through a 4-tab Streamlit web app with an AI chatbot, new customer prediction, and a full pipeline transparency view.
+
+%% ============================================================
+\section{Data: 7 CSVs, 20{,}000 Customers}
+
+\begin{tabular}{p{5cm}p{9cm}}
+\toprule
+\textbf{CSV File} & \textbf{What's in it} \\
+\midrule
+\texttt{customer\_master.csv}       & Age, gender, occupation, city, income group, CLV score/tier, customer segment \\
+\texttt{asset\_data.csv}            & Loan flags (6 types), EMI amount, FOIR, repayment status, DPD bucket \\
+\texttt{cibil\_data.csv}            & CIBIL score, DTI ratio, bureau inquiries, writeoff flag, default flag, CIBIL sub-scores \\
+\texttt{product\_ownership.csv}     & Credit card, insurance, mutual funds, consumer durable, CC variant, CC limit, CC spend \\
+\texttt{liability\_data.csv}        & Savings rate, digital adoption score, FD/RD flags, salary account, UPI count \\
+\texttt{transaction\_behavior.csv}  & Spend ratios (online/travel/fuel/education), investment intent, dominant spend category \\
+\texttt{recommendation\_targets.csv}& Ground-truth rank-1 + rank-2, confidence, bank risk scores for all 9 products \\
+\bottomrule
+\end{tabular}
+
+\textbf{Key distributions} (RBI-aligned after v6.1 calibration):
+Repayment: Regular 55\%, Delayed 25\%, Default 20\% (updated from 75/18/7\% to match RBI NPA data) $\cdot$
+CIBIL: 300--900 $\cdot$ UPI: mean 22/month $\cdot$
+Fuel spend: 5--12\% $\cdot$ Online spend: 8--18\% $\cdot$ Education spend: 5--15\% $\cdot$
+CC ownership: 7--10\% (RBI national average)
+
+\newpage
+%% ============================================================
+\section{All 160 Features Used in the ML Model}
+
+Every feature listed here is fed directly to XGBoost and CatBoost. \textbf{Bold} = assumed/fixed (not derivable from user input).
+
+\subsection{Group A — Raw Inputs (15 features)}
+
+\begin{tabular}{lll}
+\toprule
+\textbf{Feature} & \textbf{Type} & \textbf{Description} \\
+\midrule
+age & int & Customer age in years \\
+monthly\_income & float & Monthly income in ₹ \\
+cibil\_score & int & CIBIL score 300--900; $-1$ = no history \\
+foir & float & EMI ÷ income (existing debt burden) \\
+dti\_ratio & float & Total debt ÷ annual income \\
+savings\_rate & float & Monthly savings ÷ income \\
+digital\_adoption\_score & int & 0--3 (0=none, 1=mobile, 2=UPI, 3=full) \\
+investment\_intent\_score & int & 0--3 investment activity level \\
+online\_spend\_ratio & float & Online/ecommerce spend ÷ total spend \\
+travel\_spend\_ratio & float & Travel spend ÷ total spend \\
+bureau\_inquiries\_6m & int & Loan/card applications in last 6 months \\
+writeoff\_flag & int & 1 = NPA/writeoff on record \\
+default\_history\_flag & int & 1 = prior loan default \\
+city\_tier & int & 1=Metro, 2=Large city, 3=Small city \\
+tenure\_years & int & Years as ICICI Bank customer \\
+\bottomrule
+\end{tabular}
+
+\subsection{Group B — Derived Financial (22 features)}
+
+\begin{tabular}{llll}
+\toprule
+\textbf{Feature} & \textbf{Formula} & \textbf{Src} \\
+\midrule
+avg\_monthly\_spend & income $\times$ (1 $-$ savings\_rate) & derived \\
+avg\_monthly\_balance & income $\times$ balance\_multiplier & derived \\
+emi\_amount & income $\times$ foir & derived \\
+spend\_to\_income\_ratio & 1 $-$ savings\_rate & derived \\
+ecommerce\_spend & avg\_spend $\times$ online\_ratio & derived \\
+fuel\_spend & avg\_spend $\times$ fuel\_ratio & derived \\
+travel\_spend & avg\_spend $\times$ travel\_ratio & derived \\
+education\_spend & avg\_spend $\times$ edu\_ratio & derived \\
+\textbf{insurance\_premium\_spend} & avg\_spend $\times$ 0.05 & \textbf{assumed 5\%} \\
+\textbf{utility\_bill\_payments} & avg\_spend $\times$ 0.07 & \textbf{assumed 7\%} \\
+\textbf{loan\_amount} & emi $\div$ 0.022 & \textbf{assumed car-loan rate} \\
+\textbf{outstanding\_balance} & emi $\times$ 24 & \textbf{assumed 2-yr remaining} \\
+\textbf{loan\_tenure\_months} & 36 if emi$>$0 else 0 & \textbf{assumed} \\
+\textbf{monthly\_credit\_amount} & income $\times$ 1.05 & \textbf{assumed 5\% credit over income} \\
+\textbf{monthly\_debit\_amount} & income $\times$ 0.75 & \textbf{assumed 75\% spend of income} \\
+\textbf{state\_avg\_income} & own income & \textbf{assumed = own (no group avg)} \\
+active\_loan\_count & sum of 6 loan flags & derived \\
+closed\_loan\_count & max(0, tenure $\div$ 4) & derived (heuristic) \\
+has\_any\_loan & 1 if any loan else 0 & derived \\
+salary\_account\_flag & 1 if salaried & derived \\
+current\_account\_flag & 1 if biz/self-emp & derived \\
+savings\_account\_flag & 1 (always) & derived \\
+\bottomrule
+\end{tabular}
+
+\subsection{Group C — Loan \& Product Ownership Flags (9 features)}
+
+\begin{tabular}{ll}
+\toprule
+home\_loan\_flag & car\_loan\_flag \\
+personal\_loan\_flag & business\_loan\_flag \\
+education\_loan\_flag & gold\_loan\_flag \\
+credit\_card & insurance \\
+consumer\_durable & \\
+\bottomrule
+\end{tabular}
+
+All binary (0/1). Directly from user input or CSV.
+
+\subsection{Group D — Credit Card Features (5 features)}
+
+\begin{tabular}{lll}
+\toprule
+\textbf{Feature} & \textbf{Formula} & \textbf{Note} \\
+\midrule
+cc\_credit\_limit & income $\times$ 5.0 if has\_cc else 0 & Mean 4.95$\times$ in training data \\
+total\_credit\_limit & same as cc\_credit\_limit & Duplicate for model \\
+cc\_monthly\_spend & avg\_spend $\times$ card\_pct[dig] & card\_pct: dig0=0.15, dig1=0.275, dig2=0.45, dig3=0.625 \\
+cc\_utilization\_ratio & cc\_spend $\div$ (cc\_limit+1) & Ratio of monthly spend to limit \\
+credit\_utilization\_pct & cc\_util \% (user input) & CIBIL sub-component \\
+\bottomrule
+\end{tabular}
+
+\subsection{Group E — Digital \& Account Flags (10 features)}
+
+\begin{tabular}{lll}
+\toprule
+\textbf{Feature} & \textbf{Value} & \textbf{Rule} \\
+\midrule
+upi\_txn\_count & dig $\times$ 15 & proxy for UPI activity \\
+debit\_card\_usage & 10 if dig$\geq$1 else 2 & derived \\
+debit\_card & 1 (always) & derived \\
+internet\_banking\_flag & 1 if dig$\geq$2 & derived \\
+mobile\_banking\_flag & 1 if dig$\geq$1 & derived \\
+investment\_txn\_flag & 1 if inv$\geq$1 & derived \\
+mutual\_fund\_txn\_flag & 1 if inv$\geq$2 & derived \\
+demat\_account & 1 if inv$\geq$2 & derived \\
+fd\_flag & 1 if savings$\geq$0.30 & derived \\
+rd\_flag & 1 if inv$\geq$1 & derived \\
+\bottomrule
+\end{tabular}
+
+\subsection{Group F — CIBIL Sub-scores (6 features)}
+
+Values assigned by CIBIL bucket lookup (not user input):
+
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Feature} & \textbf{Excellent} & \textbf{Good} & \textbf{Risky} & \textbf{High Risk} & \textbf{No History} \\
+\midrule
+payment\_history\_score & 92 & 78 & 55 & 30 & 0 \\
+utilization\_score      & 88 & 72 & 50 & 30 & 0 \\
+credit\_history\_score  & 80 & 65 & 48 & 25 & 0 \\
+credit\_mix\_score      & 75 & 60 & 45 & 25 & 0 \\
+inquiry\_score          & 90 & 75 & 55 & 30 & 0 \\
+cibil\_composite        & 87 & 72 & 52 & 28 & 0 \\
+\bottomrule
+\end{tabular}
+
+Also: \texttt{credit\_history\_years} = max(0, age $-$ 22 + tenure $\div$ 2); \texttt{missed\_payments\_count} = 0/3/6 for regular/delayed/default.
+
+\subsection{Group G — CLV Features (3 features)}
+
+\[
+\text{CLV Score} = \min\!\left(\tfrac{\text{tenure}}{15},1\right){\times}30 +
+\{25,10,0\}_\text{repay} +
+\min\!\left(\tfrac{\max(\text{CIBIL}-550,0)}{350},1\right){\times}20 +
+\min\!\left(\tfrac{\text{loans+CC+ins+CD}}{5},1\right){\times}25
+\]
+
+\begin{tabular}{lll}
+clv\_score & 0--100 float & Full formula above \\
+clv\_tier\_enc & 0=normal, 1=elite, 2=super\_hni & thresholds: $<$72, 72--80, $\geq$80 \\
+is\_premium & 1 if CLV$\geq$72 & elite or super\_hni \\
+\end{tabular}
+
+\subsection{Group H — Risk \& Spend Category (2 features)}
+
+\begin{tabular}{lp{10cm}}
+\toprule
+\textbf{Feature} & \textbf{Derivation} \\
+\midrule
+risk\_category\_ord &
+OrdinalEncoder(['high','medium','low']) $\rightarrow$ high=0, medium=1, low=2.
+Rule: writeoff/default/CIBIL$<$650/default-repay $\rightarrow$ HIGH(0);
+CIBIL$\geq$750 + regular + bureau$<$3 $\rightarrow$ LOW(2); else MEDIUM(1). \\
+dominant\_spend\_enc &
+LabelEncoder alphabetical: ecommerce=0, education=1, fuel=2, insurance=3, travel=4, utility=5.
+Rule: onl$\geq$0.12$\rightarrow$0; trv$\geq$0.15$\rightarrow$4; inv$\geq$1$\rightarrow$1; else$\rightarrow$0. \\
+\bottomrule
+\end{tabular}
+
+\subsection{Group I — Ratio Features (7 features)}
+
+\begin{tabular}{ll}
+\toprule
+\textbf{Feature} & \textbf{Formula} \\
+\midrule
+balance\_to\_income\_ratio   & avg\_balance $\div$ (income+1) \\
+ecommerce\_to\_spend\_ratio  & ecommerce\_spend $\div$ (avg\_spend+1) \\
+emi\_to\_income\_ratio       & emi $\div$ (income+1) \\
+debit\_upi\_ratio            & debit\_card\_usage $\div$ (upi\_count+1) \\
+education\_to\_income\_ratio & education\_spend $\div$ (income+1) \\
+balance\_months\_coverage    & avg\_balance $\div$ (emi+1) \\
+credit\_utilization\_norm    & cc\_util\_pct $\div$ 100 \\
+\bottomrule
+\end{tabular}
+
+\subsection{Group J — Composite \& Score Features (5 features)}
+
+\begin{tabular}{ll}
+\toprule
+\textbf{Feature} & \textbf{Formula} \\
+\midrule
+loan\_count             & sum of 6 loan flags \\
+digital\_score          & (dig$\geq$2)+(dig$\geq$1)+upi/20 \\
+investment\_appetite    & (inv$\geq$1)+(inv$\geq$2)+(inv$\geq$2) \\
+liability\_breadth      & 1+(is\_biz)+(sav$\geq$0.30) \\
+cibil\_income\_score    & CIBIL $\times$ income $\div$ 1{,}000{,}000 \\
+cibil\_weighted\_composite & ph$\times$0.35+us$\times$0.30+hs$\times$0.15+ms$\times$0.10+iq$\times$0.10 \\
+credit\_capacity\_score & CIBIL/10 $-$ foir$\times$50 $-$ dti$\times$5 + income\_group\_bonus \\
+\bottomrule
+\end{tabular}
+
+\subsection{Group K — Interaction Features (18 features)}
+
+Products and ratios of two fields — let XGBoost capture non-linear joint effects:
+
+\begin{tabular}{lll}
+\toprule
+age\_x\_cibil           & age $\times$ CIBIL / 100{,}000      & age\_x\_income          \\
+foir\_x\_cibil          & foir $\times$ CIBIL / 1{,}000       & dti\_x\_foir            \\
+spend\_x\_cibil         & (1$-$sav) $\times$ CIBIL / 1{,}000  & dti\_x\_cibil           \\
+savings\_x\_cibil       & sav $\times$ CIBIL / 1{,}000        & savings\_x\_income      \\
+digital\_x\_online      & dig $\times$ onl                    & digital\_x\_travel      \\
+upi\_x\_income          & upi $\times$ income / 1M            & invest\_intent\_x\_income \\
+bureau\_x\_writeoff     & bureau $\times$ (writeoff+1)        & tenure\_x\_loans        \\
+income\_x\_any\_loan    & income if has\_loan else 0          & lifecycle\_x\_cibil = 0 \\
+cc\_utilization\_ratio  & cc\_spend $\div$ (cc\_limit+1)      & city\_digital\_score = (4$-$tier)$\times$dig \\
+\bottomrule
+\end{tabular}
+
+\subsection{Group L — Binary Boundary Flags (22 features)}
+
+One-hot style flags that give the model sharp decision boundaries:
+
+\begin{tabular}{lll}
+\toprule
+\textbf{Feature} & \textbf{=1 when} & \textbf{Feature} \\
+\midrule
+cibil\_no\_history  & CIBIL=$-$1         & is\_student \\
+is\_retired         & occ=retired        & is\_business\_occ \\
+cibil\_gte\_750     & CIBIL$\geq$750     & cibil\_gte\_700 \\
+cibil\_gte\_650     & CIBIL$\geq$650     & cibil\_risky\_zone \\
+cibil\_high\_risk   & CIBIL$<$650        & foir\_safe (FOIR$<$0.35) \\
+foir\_high          & FOIR$\geq$0.45     & is\_blocked \\
+prime\_home\_age    & 25$\leq$age$\leq$55 & affluent \\
+low\_income         & income group low/lower\_mid & bureau\_blocked \\
+dti\_severe         & DTI$\geq$5         & dti\_high \\
+high\_saver         & sav$\geq$0.30      & strong\_digital \\
+travel\_spender     & trv$\geq$0.15      & online\_spender \\
+tier1\_city         & city=1             & tier1\_or\_2\_city \\
+invest\_intent\_high & inv$\geq$2        & upi\_power\_user \\
+digital\_credit\_ready & dig$\geq$2 + CIBIL$\geq$700 & non\_cash\_ratio \\
+young\_edu\_candidate & 17$\leq$age$\leq$35 + no edu loan & rent\_payment\_flag \\
+\bottomrule
+\end{tabular}
+
+Also: \textbf{profit\_of\_top\_eligible = 75} (assumed fixed placeholder); \texttt{upi\_frequency\_bucket} (0--3); \texttt{ecommerce\_intensity}; \texttt{age\_edu\_window}.
+
+\subsection{Group M — Ordinal \& Label Encodings (16 features)}
+
+\textbf{Ordinal (OrdinalEncoder in exact order given):}
+
+\begin{tabular}{ll}
+\toprule
+\textbf{Feature} & \textbf{Encoding} \\
+\midrule
+income\_group\_ord        & low=0, lower\_mid=1, mid=2, upper\_mid=3, high=4 \\
+cibil\_score\_bucket\_ord & no\_history=0, high\_risk=1, risky=2, good=3, excellent=4 \\
+cibil\_tier\_enc          & no\_history=$-$1, high\_risk=0, risky=1, good=2, excellent=3 \\
+repayment\_status\_ord    & default=0, delayed=1, regular=2 \\
+dpd\_bucket\_ord          & ``0''=0, ``1-30''=1, ``31-60''=2, ``61-90''=3, ``90+''=4 \\
+dti\_bucket\_ord          & low=0, moderate=1, high=2, severe=3 \\
+city\_tier\_enc           & max(1, 4$-$city\_tier) $\rightarrow$ tier1=3, tier3=1 \\
+cc\_variant\_enc          & none=0, basic=1, rewards=2, travel=3, premium=4 \\
+\bottomrule
+\end{tabular}
+
+\textbf{Label encoded (LabelEncoder — alphabetical order):}
+
+\begin{tabular}{ll}
+\toprule
+\textbf{Feature} & \textbf{Encoding} \\
+\midrule
+occupation\_enc        & business=0, other=1, retired=2, salaried=3, self\_employed=4, student=5 \\
+gender\_enc            & F=0, M=1, O=2 \\
+marital\_status\_enc   & divorced=0, married=1, single=2, widowed=3 \\
+employer\_type\_enc    & government=0, ngo=1, other=2, private=3, self\_employed=4 \\
+education\_level\_enc  & below\_10th=0, graduate=1, high\_school=2, post\_graduate=3, professional=4 \\
+customer\_segment\_enc & elite=0, hni=1, mass=2, mass\_affluent=3, retail=4, youth=5 \\
+clv\_tier\_enc         & normal=0, elite=1, super\_hni=2 \\
+is\_premium            & 1 if CLV$\geq$72 \\
+\bottomrule
+\end{tabular}
+
+\textbf{Also assumed/placeholder:}
+\texttt{settled\_flag=0}, \texttt{loan\_lifecycle\_ratio=0}, \texttt{cash\_deposit\_frequency=2}, \texttt{foreclosure\_flag=0}, \texttt{topup\_loan\_flag=0}, \texttt{top2\_confidence\_score=50.0}, \texttt{top2\_risk\_percentage=15.0}
+
+\newpage
+%% ============================================================
+\section{ML Pipeline}
+
+\subsection{Models Trained}
+
+\begin{tabular}{lll}
+\toprule
+\textbf{Model} & \textbf{Weight / Role} & \textbf{Key Detail} \\
+\midrule
+XGBoost        & 55\% in ensemble & Optuna-tuned (5 trials), primary model \\
+CatBoost       & 45\% in ensemble & Handles categoricals natively \\
+Decision Tree  & Standalone explainer & max\_depth=8, for regulatory white-box \\
+AdaBoost       & Benchmark & Diversity comparison \\
+Logistic Regression & Benchmark & Coefficient chart for feature analysis \\
+\bottomrule
+\end{tabular}
+
+\subsection{Training Steps}
+
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item Merge all 7 CSVs on \texttt{customer\_id} → 20{,}000 row master table
+  \item Engineer all 160 features (Sections 3A–3M)
+  \item Remove target-leaking columns; filter to 9 valid products
+  \item 80/20 stratified split (stratified on recommended product label)
+  \item SMOTE oversampling for minority classes ($<$500 samples)
+  \item Optuna hyperparameter search (5 trials) → best XGBoost params
+  \item Train XGBoost → train CatBoost → ensemble: 0.55$\times$XGB + 0.45$\times$CB
+  \item \textbf{Isotonic calibration} on held-out set (reduces overconfidence in probabilities)
+  \item SHAP TreeExplainer on XGBoost → \texttt{shap\_top\_features.csv} (top-3 features per customer)
+  \item Save: \texttt{xgb\_model.pkl}, \texttt{catboost\_model.pkl}, \texttt{label\_encoder.pkl}, \texttt{feature\_cols.pkl}
+\end{enumerate}
+
+\subsection{Utility Formula (Final Ranking Score)}
+
+Raw ML probability is not used directly. A utility score balances three objectives:
+
+\[
+\text{Utility}(p) = \Bigl(
+  \underbrace{P_{\text{ML}}(p) \times 0.45}_{\text{customer fit}} +
+  \underbrace{\tfrac{\text{Profit}(p)}{100} \times 0.35}_{\text{bank profit}} -
+  \underbrace{\tfrac{\text{BankRisk}(p)}{100} \times 0.20}_{\text{bank risk}}
+\Bigr) \times S(p)
+\]
+
+$S(p)$ = saturation multiplier: education\_loan=1.10, credit\_card=1.10, insurance=1.05, car/consumer=1.05, home/business=1.00, personal=0.95, gold=0.75.
+
+\textbf{Bank Risk Score per product:}
+\[
+\text{BankRisk}(p) = \text{clip}\bigl(\text{base}(p) + \Delta_\text{CIBIL} + \Delta_\text{repay} + \Delta_\text{FOIR} + \Delta_\text{DTI} + \Delta_\text{bureau},\; 0,\; 100\bigr)
+\]
+
+\begin{tabular}{lll}
+\toprule
+\textbf{Product Bases} & & \\
+\midrule
+personal=38 & business=42 & credit\_card=28 \\
+consumer=30 & education=25 & home=20 \\
+car=22 & gold=12 & insurance=5 \\
+\midrule
+\textbf{Adjustment} & \textbf{Condition} & \textbf{Value} \\
+\midrule
+CIBIL & excellent/good/risky/high\_risk & $-18$/$-8$/+15/+30 \\
+Repayment & regular/delayed/default & $-8$/+10/+25 \\
+FOIR & $<$20\%/20--30\%/30--40\%/40--50\%/$\geq$50\% & $-3$/+2/+5/+12/+20 \\
+DTI & $<$1.5/1.5--3/3--5/$\geq$5 & $-2$/+4/+10/+18 \\
+Bureau & per inquiry (cap 5) & +4 each \\
+Insurance special & savings\_rate$\geq$0.30 & $-5$ \\
+Writeoff & flag=1 & fixed score 95 \\
+Default & flag=1 & fixed score 90 \\
+\bottomrule
+\end{tabular}
+
+\newpage
+%% ============================================================
+\section{Recommendation Engine — 8 Steps}
+
+\begin{center}
+\begin{tabular}{|c|p{11.5cm}|}
+\hline
+\rowcolor{darkblue}\textcolor{white}{\textbf{Step}} & \textcolor{white}{\textbf{Rule}} \\
+\hline
+1 & \textbf{DTI Blocker}: DTI $\geq$ 5$\times$ blocks all new credit products \\
+\hline
+2 & \textbf{Writeoff/Default Blocker}: flags block all credit except insurance (+ gold loan for default) \\
+\hline
+3 & \textbf{Age Gate}: home loan age$\leq$55; car$\leq$62; education 17--35; business 23--65; consumer 21--60 \\
+\hline
+4 & \textbf{Occupation Gate}: students blocked from home/car/personal/business loans \\
+\hline
+5 & \textbf{Affordability Gate}: headroom = max(0, 0.50$-$FOIR)$\times$income must $\geq$ min\_EMI for product. Gold loan exempt (secured). \\
+\hline
+6 & \textbf{ML Score}: XGBoost+CatBoost ensemble gives probability per product \\
+\hline
+7 & \textbf{Bank Risk Score}: computed per product using formula in Section 4 \\
+\hline
+8 & \textbf{Utility + Ranking}: utility = (ML$\times$0.45 + profit$\times$0.35 $-$ risk$\times$0.20)$\times$saturation; ineligible = 0; sort descending \\
+\hline
+\end{tabular}
+\end{center}
+
+\newpage
+%% ============================================================
+\section{Customer Case Study — Priya Sharma (Full Walkthrough)}
+
+\subsection{Inputs}
+
+\begin{tabular}{llll}
+\toprule
+Age=32 & Gender=F & Occupation=Salaried & Employer=Private \\
+City=Mumbai (Tier 1) & Education=Graduate & Marital=Single & Tenure=6 yrs \\
+Income=₹75{,}000/mo & CIBIL=780 & Repayment=Regular & Bureau=1 inquiry \\
+FOIR=0.20 & DTI=0.8$\times$ & Savings=30\% & Digital=2 (Mobile+UPI) \\
+Investment=1 & Bal.mult=2.5$\times$ & Online spend=15\% & Travel=5\% \\
+Fuel=8\% & Edu spend=10\% & CC=Yes (30\% util) & Insurance=Yes \\
+Writeoff=No & Default=No & Loans owned=None & CD=No \\
+\bottomrule
+\end{tabular}
+
+\subsection{Step A — Primary Derivations}
+
+\begin{tabular}{lll}
+\toprule
+\textbf{Derived} & \textbf{Calculation} & \textbf{Value} \\
+\midrule
+Income group    & ₹75K in ₹60K--₹1.5L band & \textbf{upper\_mid} (ord=3) \\
+CIBIL bucket    & 780 $\geq$ 750 & \textbf{excellent} (ord=4, tier=3) \\
+avg\_monthly\_spend & 75{,}000 $\times$ 0.70 & \textbf{₹52{,}500} \\
+emi\_amount & 75{,}000 $\times$ 0.20 & \textbf{₹15{,}000} \\
+avg\_monthly\_balance & 75{,}000 $\times$ 2.5 & \textbf{₹1{,}87{,}500} \\
+upi\_txn\_count & 2 $\times$ 15 & \textbf{30/month} \\
+loan\_count & 0 loans & \textbf{0} \\
+customer\_segment & age$\geq$30, income=upper\_mid & \textbf{mass\_affluent} (enc=3) \\
+cc\_variant & upper\_mid + excellent CIBIL & \textbf{premium} (enc=4) \\
+credit\_history\_years & max(0, 32$-$22+6$\div$2) & \textbf{13 years} \\
+\bottomrule
+\end{tabular}
+
+\subsection{Step B — CLV Score}
+
+\[
+\text{tenure\_pts} = \min(6/15,\,1)\times30 = \mathbf{12.00}
+\quad
+\text{repay\_pts} = 25\;(\text{regular})
+\]
+\[
+\text{cibil\_pts} = \min\!\left(\tfrac{780-550}{350},1\right)\times20 = 0.657\times20 = \mathbf{13.14}
+\]
+\[
+\text{prod\_pts} = \min\!\left(\tfrac{0_\text{loans}+1_\text{CC}+1_\text{ins}+0_\text{CD}}{5},1\right)\times25 = 0.4\times25 = \mathbf{10.00}
+\]
+\[
+\boxed{\text{CLV} = 12.00+25.00+13.14+10.00 = \mathbf{60.14} \;\rightarrow\; \text{Normal tier}\;(<72),\quad\text{clv\_tier\_enc}=0,\quad\text{is\_premium}=0}
+\]
+
+\subsection{Step C — Risk Category}
+
+\begin{tabular}{lll}
+\toprule
+\textbf{Check} & \textbf{Pass?} & \textbf{Outcome} \\
+\midrule
+writeoff=0, default=0, CIBIL$\geq$650, repay$\neq$default & All yes & No HIGH trigger \\
+CIBIL 780$\geq$750 AND regular AND bureau 1$<$3 & \textcolor{okgreen}{\textbf{YES}} & \textbf{LOW risk} \\
+\midrule
+\multicolumn{2}{l}{risk\_category\_ord (OrdinalEncoder: high=0, med=1, low=2)} & \textbf{2} \\
+\bottomrule
+\end{tabular}
+
+\subsection{Step D — Dominant Spend \& CC Features}
+
+online\_spend = 15\% $\geq$ 12\% $\rightarrow$ \textbf{ecommerce} $\rightarrow$ dominant\_spend\_enc = \textbf{0}
+
+\[
+\text{cc\_limit} = 75{,}000\times5.0 = \text{₹3{,}75{,}000}
+\quad
+\text{cc\_spend} = 52{,}500\times0.45_{\text{dig}=2} = \text{₹23{,}625}
+\quad
+\text{cc\_ratio} = \frac{23{,}625}{3{,}75{,}001} = 0.063
+\]
+
+\subsection{Step E — All Feature Values (Complete Table)}
+
+\begin{longtable}{lrl|lrl}
+\toprule
+\textbf{Feature} & \textbf{Value} & \textbf{Src} & \textbf{Feature} & \textbf{Value} & \textbf{Src} \\
+\midrule
+\endhead
+age & 32 & in & monthly\_income & 75{,}000 & in \\
+cibil\_score & 780 & in & foir & 0.20 & in \\
+dti\_ratio & 0.80 & in & savings\_rate & 0.30 & in \\
+digital\_adoption\_score & 2 & in & investment\_intent\_score & 1 & in \\
+online\_spend\_ratio & 0.15 & in & travel\_spend\_ratio & 0.05 & in \\
+bureau\_inquiries\_6m & 1 & in & tenure\_years & 6 & in \\
+writeoff\_flag & 0 & in & default\_history\_flag & 0 & in \\
+city\_tier & 1 & in & & & \\
+\midrule
+avg\_monthly\_spend & 52{,}500 & der & avg\_monthly\_balance & 1{,}87{,}500 & der \\
+emi\_amount & 15{,}000 & der & spend\_to\_income\_ratio & 0.70 & der \\
+ecommerce\_spend & 7{,}875 & der & education\_spend & 5{,}250 & der \\
+fuel\_spend & 4{,}200 & der & travel\_spend & 2{,}625 & der \\
+insurance\_premium\_spend & 2{,}625 & \textit{asmd 5\%} & utility\_bill\_payments & 3{,}675 & \textit{asmd 7\%} \\
+loan\_amount & 6{,}81{,}818 & \textit{asmd} & outstanding\_balance & 3{,}60{,}000 & \textit{asmd} \\
+loan\_tenure\_months & 36 & \textit{asmd} & monthly\_credit\_amount & 78{,}750 & \textit{asmd} \\
+monthly\_debit\_amount & 56{,}250 & \textit{asmd} & state\_avg\_income & 75{,}000 & \textit{asmd} \\
+upi\_txn\_count & 30 & der & debit\_card\_usage & 10 & der \\
+credit\_history\_years & 13 & der & missed\_payments\_count & 0 & der \\
+active\_loan\_count & 0 & der & closed\_loan\_count & 1 & der (6$\div$4) \\
+has\_any\_loan & 0 & der & salary\_account\_flag & 1 & der \\
+\midrule
+cc\_credit\_limit & 3{,}75{,}000 & der & total\_credit\_limit & 3{,}75{,}000 & der \\
+cc\_monthly\_spend & 23{,}625 & der & cc\_utilization\_ratio & 0.063 & der \\
+credit\_utilization\_pct & 30 & in & credit\_utilization\_norm & 0.30 & der \\
+\midrule
+payment\_history\_score & 92 & lkp & utilization\_score & 88 & lkp \\
+credit\_history\_score & 80 & lkp & credit\_mix\_score & 75 & lkp \\
+inquiry\_score & 90 & lkp & cibil\_composite & 87 & lkp \\
+\midrule
+clv\_score & 60.14 & cmp & clv\_tier\_enc & 0 & cmp \\
+is\_premium & 0 & cmp & dominant\_spend\_enc & 0 & cmp \\
+risk\_category\_ord & 2 & cmp & & & \\
+\midrule
+internet\_banking\_flag & 1 & der & mobile\_banking\_flag & 1 & der \\
+fd\_flag & 1 & der & rd\_flag & 1 & der \\
+investment\_txn\_flag & 1 & der & mutual\_fund\_txn\_flag & 0 & der \\
+demat\_account & 0 & der & debit\_card & 1 & der \\
+rent\_payment\_flag & 1 & der & savings\_account\_flag & 1 & der \\
+\midrule
+home\_loan\_flag & 0 & in & car\_loan\_flag & 0 & in \\
+personal\_loan\_flag & 0 & in & business\_loan\_flag & 0 & in \\
+gold\_loan\_flag & 0 & in & education\_loan\_flag & 0 & in \\
+credit\_card & 1 & in & insurance & 1 & in \\
+consumer\_durable & 0 & in & & & \\
+\midrule
+balance\_to\_income\_ratio & 2.500 & rat & emi\_to\_income\_ratio & 0.200 & rat \\
+ecommerce\_to\_spend\_ratio & 0.150 & rat & debit\_upi\_ratio & 0.323 & rat \\
+education\_to\_income\_ratio & 0.070 & rat & balance\_months\_coverage & 12.5 & rat \\
+\midrule
+loan\_count & 0 & cmp & digital\_score & 3.5 & cmp \\
+investment\_appetite & 1 & cmp & liability\_breadth & 2 & cmp \\
+cibil\_income\_score & 58.50 & cmp & cibil\_weighted\_composite & 87.1 & cmp \\
+credit\_capacity\_score & 79.0 & cmp & ecommerce\_intensity & 0.105 & cmp \\
+non\_cash\_ratio & 3 & cmp & & & \\
+\midrule
+age\_x\_cibil & 0.2496 & int & age\_x\_income & 2.400 & int \\
+foir\_x\_cibil & 0.1560 & int & spend\_x\_cibil & 0.5460 & int \\
+dti\_x\_foir & 0.1600 & int & dti\_x\_cibil & 0.6240 & int \\
+savings\_x\_cibil & 0.2340 & int & savings\_x\_income & 0.2250 & int \\
+digital\_x\_online & 0.300 & int & digital\_x\_travel & 0.100 & int \\
+upi\_x\_income & 2.250 & int & invest\_intent\_x\_income & 0.750 & int \\
+bureau\_x\_writeoff & 1 & int & tenure\_x\_loans & 0 & int \\
+income\_x\_any\_loan & 0 & int & city\_digital\_score & 6.0 & int \\
+lifecycle\_x\_cibil & 0 & \textit{asmd} & & & \\
+\midrule
+cibil\_no\_history & 0 & flg & is\_student & 0 & flg \\
+is\_retired & 0 & flg & is\_business\_occ & 0 & flg \\
+cibil\_gte\_750 & 1 & flg & cibil\_gte\_700 & 1 & flg \\
+cibil\_gte\_650 & 1 & flg & cibil\_risky\_zone & 0 & flg \\
+cibil\_high\_risk & 0 & flg & foir\_safe & 1 & flg \\
+foir\_high & 0 & flg & is\_blocked & 0 & flg \\
+prime\_home\_age & 1 & flg & affluent & 1 & flg \\
+low\_income & 0 & flg & bureau\_blocked & 0 & flg \\
+dti\_severe & 0 & flg & dti\_high & 0 & flg \\
+high\_saver & 1 & flg & strong\_digital & 1 & flg \\
+travel\_spender & 0 & flg & online\_spender & 1 & flg \\
+tier1\_city & 1 & flg & tier1\_or\_2\_city & 1 & flg \\
+invest\_intent\_high & 0 & flg & upi\_power\_user & 1 & flg \\
+upi\_frequency\_bucket & 3 & flg & digital\_credit\_ready & 1 & flg \\
+young\_edu\_candidate & 1 & flg & age\_edu\_window & 0.40 & flg \\
+\midrule
+income\_group\_ord & 3 & enc & cibil\_score\_bucket\_ord & 4 & enc \\
+repayment\_status\_ord & 2 & enc & dpd\_bucket\_ord & 0 & enc \\
+dti\_bucket\_ord & 0 & enc & cibil\_tier\_enc & 3 & enc \\
+city\_tier\_enc & 3 & enc & cc\_variant\_enc & 4 & enc \\
+occupation\_enc & 3 & enc & gender\_enc & 0 & enc \\
+marital\_status\_enc & 2 & enc & employer\_type\_enc & 3 & enc \\
+education\_level\_enc & 1 & enc & customer\_segment\_enc & 3 & enc \\
+\midrule
+top2\_confidence\_score & 50.0 & \textit{asmd} & top2\_risk\_percentage & 15.0 & \textit{asmd} \\
+profit\_of\_top\_eligible & 75 & \textit{asmd} & settled\_flag & 0 & \textit{asmd} \\
+loan\_lifecycle\_ratio & 0 & \textit{asmd} & cash\_deposit\_frequency & 2 & \textit{asmd} \\
+foreclosure\_flag & 0 & \textit{asmd} & topup\_loan\_flag & 0 & \textit{asmd} \\
+\bottomrule
+\multicolumn{6}{l}{\small in=user input, der=derived, lkp=lookup table, cmp=computed, rat=ratio, int=interaction, flg=binary flag, enc=encoding, asmd=assumed}
+\end{longtable}
+
+\subsection{Step F — Eligibility Gates}
+
+FOIR headroom = $(0.50-0.20)\times75{,}000 = \mathbf{₹22{,}500/\text{month}}$
+
+\begin{tabular}{lllll}
+\toprule
+\textbf{Product} & \textbf{Age Gate} & \textbf{Min EMI needed} & \textbf{Headroom} & \textbf{Result} \\
+\midrule
+Home Loan        & 32$\leq$55 \textcolor{okgreen}{\checkmark} & ₹4M$\times$0.0085=34{,}000 & 22{,}500$<$34{,}000 & \textcolor{blockred}{\textbf{BLOCKED}} \\
+Car Loan         & 32$\leq$62 \textcolor{okgreen}{\checkmark} & ₹800K$\times$0.022=17{,}600 & 22{,}500$\geq$17{,}600 & \textcolor{okgreen}{\textbf{OK}} \\
+Personal Loan    & 32$\leq$65 \textcolor{okgreen}{\checkmark} & ₹300K$\times$0.034=10{,}200 & 22{,}500$\geq$10{,}200 & \textcolor{okgreen}{\textbf{OK}} \\
+Business Loan    & 23$\leq$32 \textcolor{okgreen}{\checkmark} & FOIR 20\%$<$35\% & — & \textcolor{okgreen}{\textbf{OK}} \\
+Education Loan   & 17$\leq$32$\leq$35 \textcolor{okgreen}{\checkmark} & ₹500K$\times$0.013=6{,}500 & 22{,}500$\geq$6{,}500 & \textcolor{okgreen}{\textbf{OK}} \\
+Gold Loan        & No gate & Secured — exempt & — & \textcolor{okgreen}{\textbf{OK}} \\
+Credit Card      & No gate & N/A & — & \textcolor{okgreen}{\textbf{OK}} \\
+Insurance        & No gate & N/A & — & \textcolor{okgreen}{\textbf{OK}} \\
+Consumer Durable & 21$\leq$32$\leq$60 \textcolor{okgreen}{\checkmark} & ₹100K$\times$0.032=3{,}200 & 22{,}500$\geq$3{,}200 & \textcolor{okgreen}{\textbf{OK}} \\
+\bottomrule
+\end{tabular}
+
+Home loan blocked: min EMI ₹34{,}000 exceeds available headroom ₹22{,}500.
+
+\subsection{Step G — Bank Risk Scores}
+
+Total adjustment = $-18_\text{exc.CIBIL} + (-8)_\text{regular} + 2_\text{FOIR20\%} + (-2)_\text{DTI0.8} + 4_\text{bureau1} = \mathbf{-22}$
+
+\begin{tabular}{lrlll}
+\toprule
+\textbf{Product} & \textbf{Base} & \textbf{Calc} & \textbf{Score} & \textbf{Label} \\
+\midrule
+Home Loan      & 20 & 20$-$22=$-$2 & \textbf{0}  & Low \\
+Car Loan       & 22 & 22$-$22=0  & \textbf{0}  & Low \\
+Personal Loan  & 38 & 38$-$22=16 & \textbf{16} & Low \\
+Education Loan & 25 & 25$-$22=3  & \textbf{3}  & Low \\
+Gold Loan      & 12 & 12$-$22=$-$10 & \textbf{0} & Low \\
+Business Loan  & 42 & 42$-$22=20 & \textbf{20} & Medium \\
+Credit Card    & 28 & 28$-$22=6  & \textbf{6}  & Low \\
+Insurance$^*$  & 5  & 5$-$22$-$5=$-$22 & \textbf{0} & Low \\
+Consumer Dur.  & 30 & 30$-$22=8  & \textbf{8}  & Low \\
+\bottomrule
+\end{tabular}
+
+$^*$Insurance: extra $-5$ because savings\_rate $\geq$ 0.30.
+
+\subsection{Step H — Utility Scores \& Final Ranking}
+
+ML confidences from XGBoost+CatBoost (model output — cannot be hand-computed):
+
+\begin{tabular}{lrrrrl}
+\toprule
+\textbf{Product} & \textbf{ML Conf} & \textbf{Profit/100} & \textbf{Risk/100} & \textbf{Sat} & \textbf{Utility} \\
+\midrule
+Home Loan      & — & — & — & 1.00 & \textbf{0} (blocked) \\
+Personal Loan  & 0.20 & 1.00 & 0.16 & 0.95 & \textbf{0.388} \\
+Car Loan       & 0.22 & 0.65 & 0.00 & 1.05 & \textbf{0.343} \\
+Credit Card    & 0.07 & 0.75 & 0.06 & 1.10 & \textbf{0.310} \\
+Business Loan  & 0.07 & 0.90 & 0.20 & 1.00 & \textbf{0.307} \\
+Consumer Dur.  & 0.02 & 0.70 & 0.08 & 1.05 & \textbf{0.250} \\
+Education Loan & 0.06 & 0.40 & 0.03 & 1.10 & \textbf{0.177} \\
+Gold Loan      & 0.04 & 0.45 & 0.00 & 0.75 & \textbf{0.132} \\
+Insurance      & 0.04 & 0.30 & 0.00 & 1.05 & \textbf{0.129} \\
+\bottomrule
+\end{tabular}
+
+Example — Personal Loan: $(0.20\times0.45 + 1.00\times0.35 - 0.16\times0.20)\times0.95 = 0.408\times0.95 = \mathbf{0.388}$
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|c|l|c|c|p{5cm}|}
+\hline
+\rowcolor{darkblue}\textcolor{white}{\textbf{Rank}} & \textcolor{white}{\textbf{Product}} & \textcolor{white}{\textbf{Utility}} & \textcolor{white}{\textbf{Risk}} & \textcolor{white}{\textbf{Loan Range}} \\
+\hline
+\textbf{1st} & \textbf{Personal Loan} & 0.388 & 16/100 Low & ₹3L--₹7.9L, EMI ₹10K--₹27K \\
+\hline
+2nd & Car Loan & 0.343 & 0/100 Low & ₹8L--₹25L \\
+\hline
+3rd & Credit Card & 0.310 & 6/100 Low & Limit ₹3--₹9L \\
+\hline
+4th & Business Loan & 0.307 & 20/100 Med & ₹3L--₹2Cr \\
+\hline
+\end{tabular}
+\end{center}
+
+\textit{Why Personal Loan rank-1?} Priya has no existing loans, excellent CIBIL, regular repayment, and enough FOIR headroom. Personal loan has the highest bank profit (100/100) and her risk profile makes bank risk low.
+Home loan — though ideal for her age — is blocked by affordability at ₹75K income.
+
+\newpage
+%% ============================================================
+\section{Streamlit Web Application (4 Tabs)}
+
+The Streamlit app (\texttt{chatbot/app.py}) is the front-end interface for the entire system. It loads all saved models and CSVs at startup — no retraining at runtime. The app has 4 tabs, each serving a distinct use case.
+
+\begin{tabular}{lll}
+\toprule
+\textbf{File} & \textbf{Size} & \textbf{Role} \\
+\midrule
+\texttt{chatbot/app.py} & 1{,}607 lines & Streamlit front-end \\
+\texttt{api/main.py}    & 172 lines     & FastAPI JSON backend (5 endpoints) \\
+\bottomrule
+\end{tabular}
+
+\subsection{Data Loaded at Startup}
+
+\begin{tabular}{ll}
+\toprule
+\textbf{File} & \textbf{Used for} \\
+\midrule
+\texttt{recommendations\_output\_v5\_1.csv} & All 20K customers: recommendations, risk scores, amounts \\
+\texttt{customer\_master.csv}               & Demographics, CLV tier, segment \\
+\texttt{asset\_data.csv}                   & Loan flags, FOIR, repayment \\
+\texttt{cibil\_data.csv}                   & CIBIL score, writeoff, default flags \\
+\texttt{product\_ownership.csv}             & CC, insurance, consumer durable flags \\
+\texttt{shap\_top\_features.csv}            & Pre-computed SHAP top-3 reasons (test-set customers only) \\
+\texttt{xgb\_model.pkl + catboost\_model.pkl} & Live inference for new customers (Tab 3) \\
+\bottomrule
+\end{tabular}
+
+\subsection{Tab 1 — Existing Customer Dashboard}
+
+\textbf{Flow:} Enter Customer ID (e.g.\ CUST004521) $\rightarrow$ look up all 6 CSVs $\rightarrow$ validate recommendation against live eligibility gates $\rightarrow$ display.
+
+\textbf{Override logic:} If the CSV-stored rank-1 product fails any current eligibility gate (CIBIL tier drop, age change, FOIR breach), the app automatically falls back to the next-best eligible product and shows a yellow warning banner explaining why.
+
+\textbf{What is displayed:}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item KPI row: CIBIL score (colour-coded by tier), FOIR \%, savings rate, CLV tier badge
+  \item Rank-1 recommendation card: product name, confidence \%, loan amount range, EMI range, bank risk score/label
+  \item Rank-2 recommendation card: same fields
+  \item SHAP explanation panel: top-3 features driving the recommendation (from pre-computed CSV)
+  \item 9-product risk table: bank risk score + label for every product (shows what's safe vs risky for this customer)
+  \item Customer profile sidebar: all raw attributes pulled from CSVs
+\end{itemize}
+
+\subsection{Tab 2 — AI Chatbot}
+
+\textbf{Purpose:} Let relationship managers or customers ask natural-language questions about recommendations (e.g.\ ``Why was I recommended a personal loan and not a home loan?'').
+
+\textbf{Implementation:}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item LLM: \textbf{Llama 3.1 8B} via Groq API (fast inference, free tier)
+  \item System prompt: injects the customer's full financial profile + validated recommendation + SHAP reasons + bank risk scores
+  \item Guard rails: the prompt explicitly instructs the model not to fabricate SHAP values, not to mis-label FOIR or risk levels, and to decline questions outside the customer's profile
+  \item Conversation state: stored in \texttt{st.session\_state} for multi-turn dialogue
+  \item Context limit handling: if SHAP data is unavailable (customer not in test set), chatbot notes this and answers from profile only
+\end{itemize}
+
+\subsection{Tab 3 — New Customer Prediction}
+
+\textbf{Purpose:} Real-time recommendation for a customer who is NOT in the CSV (e.g.\ a walk-in customer or a new account).
+
+\textbf{Form inputs (30+ fields):}
+Age, occupation, income, CIBIL score, city tier, tenure, repayment status, FOIR, DTI, savings rate, digital adoption, investment intent, online/travel spend ratios, bureau inquiries, writeoff flag, default flag, all 9 product ownership flags, CC utilisation \%, balance multiplier.
+
+\textbf{Inference pipeline:}
+\begin{enumerate}[leftmargin=*,itemsep=1pt]
+  \item \texttt{engineer\_features(inp, feature\_cols)} constructs all 160 features
+  \item XGBoost predicts probability for each of 9 products
+  \item CatBoost predicts probability for each of 9 products
+  \item Ensemble: $0.55 \times P_\text{XGB} + 0.45 \times P_\text{CB}$
+  \item Eligibility gates applied per product (CIBIL, age, FOIR, writeoff)
+  \item Utility score: $(P_\text{ML}\times0.45 + \text{profit}\times0.35 - \text{risk}\times0.20)\times\text{saturation}$
+  \item Rank-1 = max utility; Rank-2 = second-highest
+\end{enumerate}
+
+\textbf{What is displayed:} CLV score (with formula breakdown), CLV tier badge (normal/elite/super\_hni), rank-1 and rank-2 product cards with confidence, loan ranges, EMI, bank risk score, full 9-product utility table.
+
+\subsubsection*{Key function: \texttt{engineer\_features()} — 160 features from 23 inputs}
+
+This function is the bridge between user form inputs and the ML model. Since the model was trained on CSVs with 160 columns, every single feature must be reconstructed from scratch. The function handles:
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item Income group derivation, CIBIL bucket lookup, segment classification
+  \item CLV score computation: $\min(\text{tenure}/15,1)\times30 + \{25,10,0\}_\text{repay} + \min((\text{CIBIL}-550)/350,1)\times20 + \min(\text{products}/5,1)\times25$
+  \item CC financials: limit = income $\times$ 5.0; spend = avg\_spend $\times$ card\_pct[digital\_score]
+  \item Risk category ordinal: HIGH(0) if blocked/default/CIBIL$<$650; LOW(2) if CIBIL$\geq$750+regular+bureau$<$3; else MEDIUM(1)
+  \item Dominant spend encoding: ecommerce(0) if online$\geq$12\%; travel(4) if travel$\geq$15\%; education(1) if inv$\geq$1; else ecommerce(0)
+  \item All 18 interaction terms, 22 binary boundary flags, 16 ordinal/label encodings
+  \item Safe defaults for 8 assumed features (settled\_flag=0, lifecycle\_ratio=0, etc.)
+\end{itemize}
+
+\subsection{Tab 4 — Pipeline Transparency}
+
+\textbf{Purpose:} Full explainability of every calculation for any customer (existing or new). Designed for relationship managers who need to explain a recommendation to a customer or compliance team.
+
+\textbf{Sections displayed step-by-step:}
+\begin{enumerate}[leftmargin=*,itemsep=1pt]
+  \item \textbf{Profile metrics}: income group, CIBIL tier, DTI bucket, FOIR, savings rate, digital score, CLV
+  \item \textbf{Blocker check}: which of the 5 hard gates (DTI, writeoff, default, CIBIL, bureau) are triggered
+  \item \textbf{CLV formula}: shows each of 4 components with actual values and their contribution
+  \item \textbf{Risk derivation}: which condition triggered the risk category (high/medium/low)
+  \item \textbf{Eligibility table}: for each of 9 products, which gates pass/fail (age, occupation, CIBIL, FOIR, DTI)
+  \item \textbf{Bank risk table}: 0--100 score + label for all 9 products
+  \item \textbf{Utility table}: ML confidence, profit component, risk penalty, saturation, final utility for each product
+  \item \textbf{Final ranking}: Rank-1 and Rank-2 with the reason why they won
+\end{enumerate}
+
+\subsection{FastAPI Backend (\texttt{api/main.py})}
+
+A lightweight REST API serving the same recommendation data as JSON:
+
+\begin{tabular}{ll}
+\toprule
+\textbf{Endpoint} & \textbf{Returns} \\
+\midrule
+\texttt{GET /customer/\{id\}} & Demographics + CLV \\
+\texttt{GET /recommend/\{id\}} & Rank-1, rank-2, confidence, amounts, EMI \\
+\texttt{GET /explain/\{id\}}   & SHAP top-3 feature explanations (test set only) \\
+\texttt{GET /risk/\{id\}}      & Bank risk scores for all 9 products \\
+\texttt{GET /stats}             & Portfolio summary: recommendation distribution, CIBIL histogram \\
+\bottomrule
+\end{tabular}
+
+%% ============================================================
+\section{Key Design Decisions (Point-by-Point)}
+
+\begin{enumerate}[leftmargin=*,itemsep=3pt]
+  \item \textbf{Utility over raw ML probability}: raw probability biases towards products seen more in training; utility corrects by adding bank profit and penalising risk.
+  \item \textbf{Hard gates before soft scores}: no ML confidence can override a policy rule — keeps the system legally compliant.
+  \item \textbf{Isotonic calibration}: reduces model overconfidence (raw ensemble tends to output 0.95+ for uncertain cases).
+  \item \textbf{SMOTE only for minority classes}: prevents SMOTE from distorting dominant classes; applied per-class when count $<$ 500.
+  \item \textbf{CLV as feature, not just display}: CLV score (0--100) feeds directly into XGBoost — the model learns that elite/super\_hni customers have different product needs.
+  \item \textbf{SHAP pre-computed, not live}: running SHAP at inference would be slow; instead top-3 features per customer are saved to CSV during training and loaded by the chatbot.
+  \item \textbf{Synthetic data with RBI distributions}: customers are fake but their statistical properties match real Indian banking data — CIBIL distribution, spend ratios, repayment rates all calibrated to RBI published figures.
+\end{enumerate}
+
+%% ============================================================
+\section{Conclusion}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{20{,}000 synthetic customers} generated from RBI statistics across 7 CSV tables
+  \item \textbf{160 features} per customer: raw inputs, derived financials, CIBIL sub-scores, CLV, spend categories, digital behaviour, 18 interaction terms, 22 binary flags, 16 encodings
+  \item \textbf{4 ML models}: XGBoost+CatBoost ensemble (production), Decision Tree (explainability), AdaBoost + Logistic Regression (benchmarks)
+  \item \textbf{8-step recommendation engine}: hard gates (DTI/writeoff/age/occupation/affordability) → ML → bank risk → utility ranking
+  \item \textbf{Streamlit app}: 4 tabs, AI chatbot, new customer prediction, full pipeline transparency
+  \item \textbf{Edge cases handled correctly}: home loan blocked by FOIR, students restricted, excellent-CIBIL customers get near-zero bank risk, CLV rewards loyalty
+\end{itemize}
+
+\end{document}

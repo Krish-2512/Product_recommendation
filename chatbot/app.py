@@ -104,7 +104,11 @@ clf_model, clf_cb_model, le_model, feature_cols_model, _model_load_error = load_
 @st.cache_resource
 def get_llm():
     # Streamlit Cloud stores secrets in st.secrets; local dev uses .env
-    api_key = st.secrets.get("GROQ_API_KEY", None) or os.getenv("GROQ_API_KEY")
+    try:
+        api_key = st.secrets.get("GROQ_API_KEY", None)
+    except Exception:
+        api_key = None
+    api_key = api_key or os.getenv("GROQ_API_KEY")
     if not api_key:
         st.error("GROQ_API_KEY not found. Add it to Streamlit Cloud secrets or local .env file.")
         st.stop()
@@ -494,11 +498,14 @@ def predict_for_new_customer(inp: dict):
     # Build valid scores with gates + utility
     proba_by_product = {prod: float(proba_raw[0][i]) for i, prod in enumerate(classes)}
 
+    _is_def = (inp.get("default_history_flag", 0) == 1) or (inp["repayment_status"] == "default")
     valid_scores = {}
     for i, prod in enumerate(classes):
         if prod not in PRODUCT_PROFIT:
             continue
-        if not passes_all_gates(prod, age, occ, ig, inc, foir):
+        if not passes_all_gates(prod, age, occ, ig, inc, foir,
+                                cibil=cibil, writeoff=inp.get("writeoff_flag", 0),
+                                is_defaulting=_is_def, dti=inp.get("dti_ratio", 0.0)):
             continue
         conf_norm   = float(proba_raw[0][i])
         profit_norm = PRODUCT_PROFIT[prod] / 100.0
@@ -549,8 +556,8 @@ def predict_for_new_customer(inp: dict):
 
 def compute_bank_risk_score_simple(product, _cibil_score, cibil_bucket, repayment,
                                     writeoff, default_hist, bureau, foir, dti, _age, _occ, savings_rate):
-    if writeoff == 1:        return 95.0
-    if default_hist == 1:    return 90.0
+    if writeoff == 1:                        return 95.0
+    if default_hist == 1 or repayment == "default": return 90.0
     base = {"home_loan":20,"car_loan":22,"personal_loan":38,"education_loan":25,
             "gold_loan":12,"business_loan":42,"credit_card":28,"insurance":5,"consumer_durable":30}.get(product,25)
     cadj = {"excellent":-18,"good":-8,"risky":+15,"high_risk":+30,"no_history":+12}.get(cibil_bucket,0)
@@ -562,23 +569,52 @@ def compute_bank_risk_score_simple(product, _cibil_score, cibil_bucket, repaymen
     sadj = -5 if (product=="insurance" and savings_rate>=0.30) else 0
     return round(float(np.clip(base+cadj+radj+fadj+dadj+badj+sadj, 0, 100)), 1)
 
+_CIBIL_GATES = {
+    "home_loan": 750, "car_loan": 700, "credit_card": 700,
+    "personal_loan": 650, "education_loan": 650, "business_loan": 650,
+    "consumer_durable": 650, "gold_loan": 0, "insurance": 0,
+}
+
 def passes_all_gates(prod: str, age: int, occ: str, ig: str,
-                     monthly_income: float, foir: float) -> bool:
-    """Returns True only if product passes age, occupation, and affordability gates."""
+                     monthly_income: float, foir: float,
+                     cibil: int = 900, writeoff: int = 0,
+                     is_defaulting: bool = False, dti: float = 0.0) -> bool:
+    """Returns True only if product passes ALL gates: CIBIL, writeoff, default, DTI, age, occupation, affordability."""
+    # Writeoff / NPA — blocks all credit except insurance (gold exempt as secured)
+    if writeoff and prod not in ("insurance", "gold_loan"):
+        return False
+    # Active default (flag OR repayment status) — blocks all credit except insurance & gold_loan
+    if is_defaulting and prod not in ("insurance", "gold_loan"):
+        return False
+    # DTI severe — blocks all except insurance
+    if dti >= 5 and prod != "insurance":
+        return False
+    # CIBIL gate
+    cibil_min = _CIBIL_GATES.get(prod, 0)
+    if cibil_min > 0:
+        if cibil <= 0:          # no history (-1 or 0) → blocked unless education_loan/insurance/gold
+            if prod not in ("education_loan", "insurance", "gold_loan"):
+                return False
+        elif cibil < cibil_min:
+            return False
+    # Student occupation blocks
     if occ == "student" and prod in STUDENT_BLOCKED:
         return False
+    # Business loan requires business/self_employed occupation
+    if prod == "business_loan" and occ not in ("business", "self_employed"):
+        return False
+    # Age gates
     gates = AGE_GATES.get(prod, {})
     if "max_age" in gates and age > gates["max_age"]:
         return False
     if "min_age" in gates and age < gates["min_age"]:
         return False
+    # Affordability (FOIR-based EMI headroom)
     if not is_affordable(prod, ig, monthly_income, foir):
         return False
-    # Business loan: income + FOIR gate (low/lower_mid income → personal_loan instead)
+    # Business loan: income + FOIR gate
     if prod == "business_loan":
         if ig in ("low", "lower_mid"):
-            return False
-        if ig == "mid" and foir >= 0.35:
             return False
         if foir >= 0.35:
             return False
@@ -598,11 +634,14 @@ def get_validated_recommendations(rec: pd.Series, cust: pd.Series):
     inc    = float(rec.get("monthly_income", 50_000))
     foir   = float(rec.get("foir", 0.0))
     cibil  = int(rec.get("cibil_score", 300))
+    dti    = float(rec.get("dti_ratio", 0.0))
+    wof    = int(rec.get("writeoff_flag", 0))
+    rep    = str(rec.get("repayment_status", "regular"))
+    dfl    = int(rec.get("default_history_flag", 0)) if "default_history_flag" in rec.index else 0
+    is_def = (dfl == 1) or (rep == "default")
     csv_r1 = rec["ml_rank1_recommendation"]
 
     # ── No CIBIL history (NH) — new first-time credit user ──────
-    # In real India banking, CIBIL = -1 means no credit history.
-    # Education loan + insurance are always available regardless of CIBIL.
     if cibil <= 0:
         ig_safe   = ig if ig in LOAN_AMOUNT_RANGES.get("education_loan", {}) else "mid"
         r1_ranges = compute_loan_range("education_loan", ig_safe, age, inc, foir)
@@ -613,14 +652,16 @@ def get_validated_recommendations(rec: pd.Series, cust: pd.Series):
 
     score_cols = [c for c in rec.index if c.startswith("score_")]
 
-    # Score all valid products
+    # Score all valid products — apply ALL gates consistently
     valid_scores = {}
     for col in score_cols:
         prod  = col.replace("score_", "")
         score = float(rec[col])
         if score <= 0:
             continue
-        if not passes_all_gates(prod, age, occ, ig, inc, foir):
+        if not passes_all_gates(prod, age, occ, ig, inc, foir,
+                                cibil=cibil, writeoff=wof,
+                                is_defaulting=is_def, dti=dti):
             continue
         mult = AGE_PRODUCT_MULTIPLIER.get(prod, lambda _: 1.0)(age)
         valid_scores[prod] = score * mult
@@ -818,11 +859,30 @@ if "nc_result"        not in st.session_state: st.session_state.nc_result = None
 with st.sidebar:
     st.markdown("## 🏦 ICICI Bank")
     st.markdown("### Product Recommendation System")
-    st.caption("ML Pipeline v5.1 · Data Generator v6.1")
+    st.caption("ML Pipeline  · Data Generator ")
     st.divider()
 
     raw_id      = st.text_input("Enter Customer ID", placeholder="e.g. CUST000001")
     customer_id = raw_id.upper().strip()
+
+    # ── Quick navigation (Prev / Next) ──────────────────────────
+    _all_ids = sorted(recs_df.index.tolist())
+    _cur_idx = _all_ids.index(customer_id) if customer_id in _all_ids else -1
+    _nc1, _nc2, _nc3 = st.columns(3)
+    if _nc1.button("◀ Prev", use_container_width=True):
+        if _cur_idx > 0:
+            customer_id = _all_ids[_cur_idx - 1]
+    if _nc2.button("▶ Next", use_container_width=True):
+        if _cur_idx < len(_all_ids) - 1:
+            customer_id = _all_ids[_cur_idx + 1]
+        elif _cur_idx == -1 and _all_ids:
+            customer_id = _all_ids[0]
+    _jump = _nc3.number_input("#", min_value=1, max_value=len(_all_ids), value=max(_cur_idx+1,1), step=1, label_visibility="collapsed")
+    if _nc3.button("Go", use_container_width=True):
+        customer_id = _all_ids[int(_jump) - 1]
+    if _cur_idx >= 0:
+        st.caption(f"Customer {_cur_idx+1} of {len(_all_ids)}")
+    # ────────────────────────────────────────────────────────────
 
     if customer_id and customer_id != st.session_state.current_customer:
         st.session_state.current_customer = customer_id
@@ -847,7 +907,7 @@ with st.sidebar:
     st.caption("🧠 Llama 3.1 8B via Groq")
 
 # ── Always show 3 tabs ────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "💬 AI Chatbot", "🆕 New Customer", "🔍 Pipeline"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "💬 AI Chatbot", "🆕 New Customer", "🔍 Pipeline", "📈 EDA Report"])
 
 # Shared variables for tab1 and tab2
 rec = cust = r1 = r2 = r1_conf = r2_conf = None
@@ -1404,7 +1464,9 @@ with tab4:
                 st.success("**No Writeoff / NPA**  \nNo block")
         with _b3:
             if _dfl:
-                st.error("**Prior Default History**  \nBlocks all credit except insurance & gold loan")
+                st.error("**Prior Default History flag set**  \nBlocks all credit except insurance & gold loan")
+            elif _rep == "default":
+                st.error("**Active Default Repayment**  \nRepayment status = default — blocks all new credit except insurance & gold loan")
             else:
                 st.success("**No Default History**  \nNo block")
 
@@ -1437,18 +1499,19 @@ with tab4:
 | **CLV Score** | sum | **{_clv_calc} / 100** |
 """)
         with _clv_col2:
-            st.metric("CLV Score", f"{_clv_score:.1f}", _tier_lbl)
+            st.metric("CLV Score", f"{_clv_calc:.1f}", _tier_lbl)
             st.caption("≥ 80 = Super HNI  \n≥ 72 = Elite  \n< 72 = Normal")
 
         # ── STEP 4: RISK CATEGORY ────────────────────────────────────
         st.divider()
         st.markdown("### Step 4 — Risk Category Derivation")
         _rc = st.columns(4)
+        _def_hit = bool(_dfl) or (_rep == "default")
         _checks = [
             ("Writeoff flag?",          bool(_wof),
              f"{'YES — triggers HIGH' if _wof else 'No'}"),
-            ("Default history?",        bool(_dfl),
-             f"{'YES — triggers HIGH' if _dfl else 'No'}"),
+            ("Default flag / active default?", _def_hit,
+             f"{'flag=1' if _dfl else ('rep=default' if _rep=='default' else 'No')}"),
             (f"CIBIL {_cs2} < 650?",    _cs2 < 650,
              f"{'YES — triggers HIGH' if _cs2<650 else 'No — CIBIL is ' + str(_cs2)}"),
             (f"CIBIL ≥ 750 + regular + bureau < 3?",
@@ -1467,12 +1530,12 @@ with tab4:
                 col.success(f"**{label}**  \n{detail}")
 
         if _wof or _dfl or _cs2 < 650 or _rep == "default":
-            _risk_final = "HIGH (ord=2)"
+            _risk_final = "HIGH (ord=0)"
             _risk_color = "error"
             _risk_why   = ("Writeoff flag" if _wof else "Default history" if _dfl else
                            f"CIBIL {_cs2} < 650" if _cs2<650 else "Repayment = default")
         elif _cs2>=750 and _rep=="regular" and _bur<3:
-            _risk_final = "LOW (ord=0)"
+            _risk_final = "LOW (ord=2)"
             _risk_color = "success"
             _risk_why   = f"CIBIL {_cs2} ≥ 750, regular repayment, bureau inquiries {_bur} < 3"
         else:
@@ -1484,6 +1547,9 @@ with tab4:
         # ── STEP 5: ELIGIBILITY GATES ────────────────────────────────
         st.divider()
         st.markdown("### Step 5 — Eligibility Gates (9 Products)")
+        # treat active default repayment same as default_history_flag for blocking
+        _is_defaulting = (_dfl == 1) or (_rep == "default")
+
         _gate_rows = []
         for _prod in ALL_PRODUCTS:
             _g = AGE_GATES.get(_prod, {})
@@ -1495,7 +1561,8 @@ with tab4:
             if not _age_ok:
                 _age_note = f"❌ {_age} not in {_g.get('min_age','?')}–{_g.get('max_age','?')}"
             _occ_ok   = not (_occ=="student" and _prod in STUDENT_BLOCKED)
-            _occ_note = "✅" if _occ_ok else "❌ student"
+            _occ_ok   = _occ_ok and not (_prod=="business_loan" and _occ not in ("business","self_employed"))
+            _occ_note = "✅" if _occ_ok else ("❌ student" if _occ=="student" else "❌ occ")
             _dti_ok   = not (_dti>=5 and _prod!="insurance")
             _dti_note = f"✅ {_dti:.1f}×" if _dti_ok else f"❌ severe {_dti:.1f}×"
             _foir_ok  = is_affordable(_prod, _ig, _inc, _foir)
@@ -1507,17 +1574,24 @@ with tab4:
             if _prod == "business_loan":
                 if _ig in ("low","lower_mid") or (_ig=="mid" and _foir>=0.35) or _foir>=0.35:
                     _biz_ok = False
-            _wof_ok = not (_wof and _prod not in ["insurance"])
-            _dfl_ok = not (_dfl and _prod not in ["insurance","gold_loan"])
-            _eligible = _age_ok and _occ_ok and _dti_ok and _foir_ok and _biz_ok and _wof_ok and _dfl_ok
+            _wof_ok  = not (_wof and _prod not in ["insurance"])
+            _dfl_ok  = not (_is_defaulting and _prod not in ["insurance","gold_loan"])
+            _cibil_min = _CIBIL_GATES.get(_prod, 0)
+            _cibil_ok  = (_cs2 <= 0) or (_cs2 >= _cibil_min)  # -1 (no history) passes only gold/insurance
+            if _cs2 <= 0:
+                _cibil_ok = _cibil_min == 0
+            _cibil_note = "N/A ✅" if _cibil_min == 0 else \
+                          (f"✅ {_cs2}≥{_cibil_min}" if _cibil_ok else f"❌ {_cs2}<{_cibil_min}")
+            _eligible = _age_ok and _occ_ok and _dti_ok and _foir_ok and _biz_ok and _wof_ok and _dfl_ok and _cibil_ok
             _gate_rows.append({
                 "Product"    : _prod.replace("_"," ").title(),
                 "Age"        : _age_note,
                 "Occupation" : _occ_note,
+                "CIBIL"      : _cibil_note,
                 "DTI"        : _dti_note,
                 "FOIR/Afford": _foir_note,
                 "Writeoff"   : ("✅" if _wof_ok else "❌ NPA"),
-                "Default"    : ("✅" if _dfl_ok else "❌ blocked"),
+                "Default"    : ("✅" if _dfl_ok else "❌ default"),
                 "Result"     : "✅ Eligible" if _eligible else "❌ Blocked",
             })
         st.dataframe(pd.DataFrame(_gate_rows), use_container_width=True, hide_index=True)
@@ -1564,10 +1638,9 @@ with tab4:
             _conf_str  = f"{_conf_val*100:.1f}%" if _conf_val is not None else ("from CSV" if _use_existing else "—")
             _profit    = PRODUCT_PROFIT.get(_prod, 0)
             _sat       = PRODUCT_SATURATION.get(_prod, 1.0)
-            _elig_flag = passes_all_gates(_prod, _age, _occ, _ig, _inc, _foir) and \
-                         not (_dti>=5 and _prod!="insurance") and \
-                         not (_wof and _prod not in ["insurance"]) and \
-                         not (_dfl and _prod not in ["insurance","gold_loan"])
+            _elig_flag = passes_all_gates(_prod, _age, _occ, _ig, _inc, _foir,
+                                          cibil=_cibil, writeoff=_wof,
+                                          is_defaulting=_is_defaulting, dti=_dti)
             _util_rows.append({
                 "Product"     : _prod.replace("_"," ").title(),
                 "ML Conf"     : _conf_str,
@@ -1584,7 +1657,11 @@ with tab4:
         st.divider()
         st.markdown("### Step 8 — Final Ranking")
         _ranked = sorted(
-            [(p, _prod_utility.get(p,0)) for p in ALL_PRODUCTS if _prod_utility.get(p,0) > 0],
+            [(p, _prod_utility.get(p,0)) for p in ALL_PRODUCTS
+             if _prod_utility.get(p,0) > 0
+             and passes_all_gates(p, _age, _occ, _ig, _inc, _foir,
+                                  cibil=_cibil, writeoff=_wof,
+                                  is_defaulting=_is_defaulting, dti=_dti)],
             key=lambda x: -x[1]
         )
         if _ranked:
@@ -1605,3 +1682,184 @@ with tab4:
                     st.markdown(f"{_medal} **{_p.replace('_',' ').title()}** — utility `{_s:.4f}` | risk `{_rsk:.0f}/100` ({_rl3})")
         else:
             st.warning("No eligible products with utility score > 0.")
+
+# ── TAB 5: EDA REPORT ────────────────────────────────────────
+with tab5:
+    st.title("📈 Exploratory Data Analysis Report")
+    st.caption("Complete analysis of all 8 synthetic datasets — 20,000 ICICI Bank customers · Data Generator v6.1 · RBI-aligned")
+
+    _eda_base = os.path.join(os.path.dirname(__file__), "..")
+
+    def _eda_section(title: str, subtitle: str, png: str, bullets: list):
+        st.divider()
+        st.subheader(title)
+        st.caption(subtitle)
+        _img_path = os.path.join(_eda_base, png)
+        if os.path.exists(_img_path):
+            st.image(_img_path, use_container_width=True)
+        else:
+            st.warning(f"Chart not found: {png}. Run eda_analysis.py to generate it.")
+        with st.expander("📝 Key Findings"):
+            for b in bullets:
+                st.markdown(f"- {b}")
+
+    # ── Section 1: Demographics ──────────────────────────────
+    _eda_section(
+        "1. Customer Demographics — customer_master.csv",
+        "20,000 customers across age, occupation, income, city tier, segment, and CLV tier",
+        "eda_01_demographics.png",
+        [
+            "**Age** is uniformly distributed 18–75 (mean=46.5). Real bank data peaks 25–45 — this is a known synthetic data limitation (Fix 2 deferred).",
+            "**Occupation**: Salaried 51.7% dominates, followed by self-employed 12%, student 11.9%. Realistic for an urban Indian bank portfolio.",
+            "**Income group**: Roughly pyramidal — low/lower_mid/mid ≈ 25% each, upper_mid 16%, high 5%.",
+            "**City tier**: Tier-3 dominates at 66.8%, Tier-2 at 24.5%, Tier-1 at 8.7% — matches India's demographic spread.",
+            "**Customer segment**: mass 43.3%, youth+retail ≈ 40%, mass_affluent 12.9%, elite+HNI only 3.7% — correct rarity of premium customers.",
+            "**CLV tier**: normal 88%, elite 10%, super_hni 2% — thresholds set at p88 and p98 of the CLV score distribution.",
+        ]
+    )
+
+    # ── Section 2: CIBIL ──────────────────────────────────────
+    _eda_section(
+        "2. CIBIL Score Analysis — cibil_data.csv",
+        "Credit score distribution, tier breakdown, repayment causal validation, sub-factor scores, bureau inquiries",
+        "eda_02_cibil.png",
+        [
+            "**CIBIL distribution**: Right-skewed, peaking 780–820. Mean=735.7. 51.1% in excellent tier — high but plausible for ICICI's urban salaried base.",
+            "**4-tier split**: excellent 51.1%, high_risk 19.6%, good 15.1%, risky 13.9%, no_history 0.2%.",
+            "**Causal validation**: regular repayment → median CIBIL 798; delayed → 693; default → 619. Confirms the causal generation chain is working correctly.",
+            "**Sub-factors**: Utilization score is highest (median ~90), Credit Mix is lowest (~47) — reflects limited product diversity in the portfolio.",
+            "**Bureau inquiries**: Exponential decay from 0 to 7 inquiries — realistic (most customers are not credit-hungry).",
+            "**CIBIL by income**: Higher income correlates with slightly better CIBIL, but with wide overlap — income alone doesn't determine creditworthiness.",
+        ]
+    )
+
+    # ── Section 3: DTI, CLV, Default ─────────────────────────
+    _eda_section(
+        "3. DTI, CLV Score & Default Rate Analysis — New Variables",
+        "Debt-to-income ratio, customer lifetime value distribution, writeoff and default rates by CIBIL tier",
+        "eda_02b_dti_clv.png",
+        [
+            "**DTI ratio**: 94.6% of customers are 'low' DTI (<1.5×). This is expected — most retail customers have 0 or 1 loan.",
+            "**DTI hard block**: The ≥5× gate (severe DTI) blocks 0% of customers — confirming the data generator's upper constraint works.",
+            "**CLV score**: Mean=46.7, Median=48.5. p88=68.5 (elite threshold), p98=78.0 (super_hni threshold). Distribution is roughly normal with right tail.",
+            "**Writeoff by CIBIL**: high_risk 22.2% writeoff rate vs excellent 0% — validates that CIBIL tier correctly predicts default risk.",
+            "**Default history by CIBIL**: high_risk 56.5% default history vs excellent 0% — strong causal signal confirming data integrity.",
+            "**CLV by CIBIL**: Excellent CIBIL → higher CLV (median ~55) because better repayment earns more repayment_pts. high_risk → CLV median ~25.",
+        ]
+    )
+
+    # ── Section 4: Loans & Assets ────────────────────────────
+    _eda_section(
+        "4. Loan & Asset Analysis — asset_data.csv",
+        "Loan type prevalence, FOIR distribution, DPD buckets, repayment status, loan amounts by income",
+        "eda_03_assets.png",
+        [
+            "**Loan prevalence**: Gold loan dominates at 18.5%, personal loan 10.8%, car 5.7%. Home loan very low at 0.8% — realistic for tier-2/3 city customer base.",
+            "**Business loan 0%**: Correctly zero — the generator only assigns business loans to business/self-employed customers with sufficient income.",
+            "**FOIR distribution**: Most customers below 0.35 (safe zone). Right-skewed — few customers are over-leveraged.",
+            "**DPD**: 49.2% on-time (DPD=0), 18.3% mildly overdue (1–30 days). Matches the RBI-aligned repayment split of 55/25/20%.",
+            "**Repayment split**: regular 54.7%, delayed 25.4%, default 19.9% — closely matches the target 55/25/20% after Fix 1 was applied.",
+            "**Active loans**: 65.6% of customers have 0 active loans, 31.6% have 1 — realistic for a retail bank portfolio.",
+        ]
+    )
+
+    # ── Section 5: Banking Behaviour ─────────────────────────
+    _eda_section(
+        "5. Banking Behaviour & Digital Adoption — liability_data.csv",
+        "Savings rate, UPI transactions, digital adoption, account ownership, savings by city tier and occupation",
+        "eda_04_liability.png",
+        [
+            "**Savings rate**: Mean 32.8%, roughly normal 10–50%. Healthy savings culture in the synthetic portfolio.",
+            "**UPI transactions**: Mean 21.8/month. Power user threshold (≥30) captures top ~35% of customers — these are priority credit card targets.",
+            "**Digital adoption**: 0=5.7%, 1=37.5%, 2=43.5%, 3=13.3%. Majority are mid-tier digital users (mobile+UPI). Realistic.",
+            "**Account ownership**: savings_account 89.9% (near-universal), FD 40.1%, RD 35.1%, current_account 29.7%.",
+            "**Savings by city tier**: Nearly identical across Tier 1/2/3. Real data would show Tier-1 saving less (higher cost of living) — a minor synthetic limitation.",
+            "**Digital by occupation**: Very flat across all occupations (1.58–1.66). Students and salaried should be more digital than retired — a known data quality limitation.",
+        ]
+    )
+
+    # ── Section 6: Spend Behaviour ───────────────────────────
+    _eda_section(
+        "6. Spend Behaviour & Transaction Patterns — transaction_behavior.csv",
+        "Spend category breakdown, dominant spend distribution, online/travel ratios, investment intent",
+        "eda_05_transactions.png",
+        [
+            "**Dominant spend**: ecommerce 67.8%, education 22.1%, fuel 5.5%, travel 4% — matches the LabelEncoder mapping used in the ML features.",
+            "**Online spend ratio**: Flat 0.08–0.18. The credit card boost trigger (≥0.20) is beyond the data range — zero customers trigger this. Fix 5 (deferred).",
+            "**Travel spend ratio**: Flat 0.03–0.12. The travel card trigger (≥0.15) is also beyond the range — same Fix 5 issue.",
+            "**Investment intent**: 0=53.5%, 1=38.6%, 2=7.4%, 3=0.5%. Most customers have low-to-no investment intent — insurance/MF recommendations will be rare.",
+            "**Monthly spend by income**: Strong positive gradient — high income group spends 5–7× more than low income. Validates income → spend relationship.",
+        ]
+    )
+
+    # ── Section 7: Product Ownership ─────────────────────────
+    _eda_section(
+        "7. Product Ownership Analysis — product_ownership.csv",
+        "Ownership rates, CC variant split, credit limit, CC by CIBIL tier, insurance by segment, products per customer",
+        "eda_06_products.png",
+        [
+            "**Credit card penetration**: 6.1% — very close to RBI national average of 7% after Fix 3 was applied (reduced from 22% previously).",
+            "**Debit card**: 79.9%, Insurance: 42%, FD: 40.1%, RD: 35.1% — all within realistic Indian banking ranges.",
+            "**CC variant split**: basic 28.5%, premium 29.9%, rewards 41.5% — reflects variety across income/CIBIL tiers.",
+            "**CC by CIBIL tier**: Only good (7.6%) and excellent (9.7%) hold credit cards — zero in high_risk/risky. Confirms CIBIL ≥700 gate is working perfectly.",
+            "**Insurance by segment**: Flat 41–48% across ALL segments. HNI customers should be ~65%, mass ~30%. This is Fix 4 (deferred — segment-differentiated insurance rates).",
+            "**Products per customer**: Most own 2–3 products (mode=2). 2.3% own nothing, 4.4% own 5+ products.",
+        ]
+    )
+
+    # ── Section 8: Recommendation Output ─────────────────────
+    _eda_section(
+        "8. Recommendation Engine Output — recommendation_targets.csv",
+        "Top recommended products, confidence scores, risk labels, model agreement across 20K customers",
+        "eda_07_recommendations.png",
+        [
+            "Shows distribution of rank-1 recommendations across all 20K customers.",
+            "Confidence score distribution — high-confidence recommendations indicate the ML model has a clear signal.",
+            "Bank risk label distribution — what proportion of recommendations are Low/Medium/High/Critical risk.",
+        ]
+    )
+
+    # ── Section 9: Portfolio & Seasonal ──────────────────────
+    _eda_section(
+        "9. Portfolio Performance & Seasonal Trends — product_performance_monthly.csv",
+        "12-month default rates, profit multipliers, and recommendation intensity for all 9 products",
+        "eda_08_portfolio.png",
+        [
+            "**Seasonal default rates**: Education loan shows highest default rate (~12–14%). Insurance shows lowest (~2%). Reflects real-world product risk profiles.",
+            "**Profit multipliers**: Fluctuate month-to-month (±5–10%) based on seasonal adjustments — e.g. home loans peak in Q4 (festive season).",
+            "**Recommendation intensity**: Education loan intensity is 0.6 (capped) to avoid over-recommending a risky product. Gold/home/car loan at 1.0.",
+            "**Net adjustment = profit_multiplier × intensity**: This is applied as a final portfolio-level multiplier in the utility scoring step.",
+        ]
+    )
+
+    # ── Section 10: Correlation Matrix ───────────────────────
+    _eda_section(
+        "10. Cross-Dataset Correlation Analysis",
+        "Key numeric features across all merged tables — validates causal relationships between variables",
+        "eda_09_correlations.png",
+        [
+            "**CIBIL score ↔ repayment_ord**: Strong positive correlation — validates causal generation (better repayment → higher CIBIL).",
+            "**monthly_income ↔ loan_amount**: Strong positive — richer customers take larger loans.",
+            "**digital_adoption ↔ online_spend_ratio**: Moderate positive — more digital users spend more online.",
+            "**clv_score ↔ cibil_score**: Moderate positive — better credit → higher repayment_pts → higher CLV.",
+            "**foir ↔ emi_amount**: Near-perfect positive — FOIR is computed as EMI/income, so this validates data integrity.",
+            "**writeoff_flag ↔ default_history_flag**: Strong positive — both are driven by the same high-risk CIBIL tier, confirming causal consistency.",
+        ]
+    )
+
+    # ── Summary Stats Table ───────────────────────────────────
+    st.divider()
+    st.subheader("📋 Dataset Summary")
+    _summary = pd.DataFrame([
+        {"Dataset": "customer_master.csv",         "Rows": 20000, "Cols": 22, "Key variables": "age, occupation, income_group, clv_score, clv_tier, customer_segment"},
+        {"Dataset": "cibil_data.csv",              "Rows": 20000, "Cols": 22, "Key variables": "cibil_score, cibil_score_bucket, writeoff_flag, default_history_flag, bureau_inquiries_6m"},
+        {"Dataset": "asset_data.csv",              "Rows": 20000, "Cols": 17, "Key variables": "repayment_status, foir, dti_ratio, loan_amount, emi_amount, dpd_bucket"},
+        {"Dataset": "liability_data.csv",          "Rows": 20000, "Cols": 16, "Key variables": "savings_rate, digital_adoption_score, upi_txn_count, savings_account_flag"},
+        {"Dataset": "transaction_behavior.csv",    "Rows": 20000, "Cols": 16, "Key variables": "online_spend_ratio, travel_spend_ratio, dominant_spend_category, investment_intent_score"},
+        {"Dataset": "product_ownership.csv",       "Rows": 20000, "Cols": 16, "Key variables": "credit_card, insurance, cc_credit_limit, cc_monthly_spend, mutual_funds"},
+        {"Dataset": "recommendation_targets.csv",  "Rows": 20000, "Cols": 85, "Key variables": "recommended_product, confidence_score, bank_risk_score_*, utility_score_*"},
+        {"Dataset": "product_performance_monthly.csv", "Rows": 108, "Cols": 6, "Key variables": "month, product, default_rate_pct, profit_multiplier, net_adjustment"},
+    ])
+    st.dataframe(_summary, use_container_width=True, hide_index=True)
+
+    st.info("💡 **To regenerate charts** after re-running the data generator: run `python eda_analysis.py` from the project root. Charts are saved as PNG files and auto-loaded here.")
